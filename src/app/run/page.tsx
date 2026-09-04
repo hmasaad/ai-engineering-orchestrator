@@ -8,11 +8,16 @@ import { AppHeader } from "@/components/AppHeader";
 import { ApprovalGate } from "@/components/ApprovalGate";
 import { ArtifactList } from "@/components/ArtifactList";
 import { ControlCard } from "@/components/ControlCard";
+import { EvalGateCard } from "@/components/EvalGateCard";
 import { PlanView } from "@/components/PlanView";
+import { PlannerCard } from "@/components/PlannerCard";
 import { QualityReport } from "@/components/QualityReport";
+import { ResultMergerCard } from "@/components/ResultMergerCard";
+import { RiskEngineCard } from "@/components/RiskEngineCard";
 import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
 import { applyApproval } from "@/lib/orchestrate";
+import { compactGate } from "@/lib/quality";
 import { fetchLatest, loadRun, saveRun } from "@/lib/storage";
 import type { OrchestrationRun } from "@/lib/types";
 
@@ -91,8 +96,12 @@ export default function RunPage() {
                 </button>
               </div>
               <TaskAnalysisCard analysis={run.analysis} />
+              {run.analysis.planner ? <PlannerCard planner={run.analysis.planner} /> : null}
+              {run.analysis.riskEngine ? <RiskEngineCard engine={run.analysis.riskEngine} /> : null}
               {run.analysis.route ? <AgentRouterCard route={run.analysis.route} /> : null}
               {run.state ? <SharedStateCard state={run.state} live /> : null}
+              {run.state ? <ResultMergerCard state={run.state} live /> : null}
+              {run.quality ? <EvalGateCard gate={compactGate(run.quality)} live /> : null}
               {run.plan.control ? <ControlCard control={run.plan.control} /> : null}
               <PlanView plan={run.plan} />
               <QualityReport report={run.quality} />

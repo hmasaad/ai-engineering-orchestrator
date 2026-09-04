@@ -1,30 +1,19 @@
-import { CONTROL_PHASES } from "@/lib/control";
-import type { ControlPolicy, GateId } from "@/lib/types";
-
-const PHASE_GATE: Record<string, GateId | null> = {
-  Planning: null,
-  "Human Approval": "plan",
-  Implementation: null,
-  Testing: null,
-  Security: null,
-  PR: null,
-};
+import type { ControlPolicy } from "@/lib/types";
 
 export function ControlCard({ control }: { control: ControlPolicy }) {
-  const active = new Set(control.gates.map((item) => item.id));
-  let humanIndex = 0;
+  const human = control.gates.length > 0;
 
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        4. Human approval / control
+        8. Human approval / action
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">
-        {control.autonomous ? "No ship work — no merge gate" : "Agents do not run autonomously"}
+        {control.autonomous ? "Action is automatic after the gate" : "Human, then Action"}
       </p>
       <p className="mt-2 text-sm text-ink-soft">
-        Security Review still happens before Implementation. The second human stop is before a PR.
-        Production deploys, migrations, destructive ops, dependency upgrades, and infra always gate.
+        Quality gate first. Then a human only when the Risk Engine says HIGH or CRITICAL. Action is
+        opening a PR — never a merge.
       </p>
 
       {control.kinds.length > 0 ? (
@@ -41,12 +30,11 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
       ) : null}
 
       <ol className="mt-4 space-y-0">
-        {CONTROL_PHASES.map((phase, index) => {
+        {["Result Merger", "Quality Gate", "Human Approval", "Action"].map((phase, index) => {
           const isHuman = phase === "Human Approval";
-          const gateId = isHuman ? (humanIndex++ === 0 ? "plan" : "ship") : PHASE_GATE[phase];
-          const lit = isHuman ? active.has(gateId as GateId) : true;
+          const lit = isHuman ? human : true;
           return (
-            <li key={`${phase}-${index}`} className="flex flex-col">
+            <li key={phase} className="flex flex-col">
               {index > 0 ? (
                 <span className={`ml-3 h-3 w-px ${lit ? "bg-copper/40" : "bg-rule"}`} aria-hidden />
               ) : null}
@@ -56,7 +44,9 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
                     ? "border-copper bg-copper/15 text-copper"
                     : isHuman
                       ? "border-dashed border-rule text-ink-soft line-through decoration-ink-soft/50"
-                      : "border-navy bg-navy text-paper"
+                      : phase === "Action"
+                        ? "border-navy bg-navy text-paper"
+                        : "border-rule bg-paper text-navy"
                 }`}
               >
                 {isHuman ? `[${phase}]` : phase}
@@ -76,12 +66,16 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
             </li>
           ))}
         </ul>
-      ) : null}
+      ) : (
+        <p className="mt-4 text-sm text-sage">No human gate. LOW/MEDIUM Action proceeds if evals PASS.</p>
+      )}
 
       <pre className="mt-4 overflow-x-auto rounded-xl border border-rule bg-navy-2/5 p-3 font-mono text-[11px] leading-5 text-navy">
         {JSON.stringify(
           {
             autonomous: control.autonomous,
+            risk: control.risk,
+            action: control.action,
             kinds: control.kinds,
             gates: control.gates.map((item) => ({ id: item.id, before: item.before })),
           },

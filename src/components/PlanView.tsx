@@ -8,7 +8,7 @@ export function PlanView({ plan }: { plan: ExecutionPlan }) {
       </p>
       <p className="mt-2 text-sm text-ink-soft">{plan.principle}</p>
       <p className="mt-1 text-xs text-ink-soft">
-        Evals sit in front of the ship gate. Humans approve the plan and the PR. Agents do not run autonomously.
+        Evals sit after Result Merger. A human is inserted only when the Risk Engine says HIGH or CRITICAL.
       </p>
       <ol className="mt-4 space-y-3">
         {plan.steps.map((step, index) => (

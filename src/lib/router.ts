@@ -1,10 +1,13 @@
 import { AGENTS, PATTERN_LABEL } from "./roster";
+import { policyFor, riskPolicyOf } from "./risk";
 import type {
   AgentId,
   AgentRoute,
   AgentRouting,
   AreaId,
+  PlannerResult,
   PublicAgentName,
+  RiskEngineResult,
   RoutePattern,
   RouteSkip,
   TaskAnalysis,
@@ -39,17 +42,20 @@ const TO_PUBLIC: Partial<Record<AgentId, PublicAgentName>> = {
 const SKIP_REASON: Record<PublicAgentName, string> = {
   requirements: "Scope is already a single, concrete change.",
   architect: "No structural design decision.",
-  security: "Not an authentication, payments, or threat-model change.",
+  security: "Risk Engine did not require Security Review.",
   developer: "This ticket does not ask for a code change.",
-  testing: "No change to lock with tests.",
-  pr_reviewer: "No PR will be opened.",
+  testing: "Risk is LOW — tests are optional.",
+  pr_reviewer: "Risk is LOW — review is optional.",
   bug: "Not a failure report.",
   research: "The routed specialists already cover the evidence this ticket needs.",
   rca: "No incident or bug to lock a cause for.",
   tech_debt: "Not a cleanup or debt ticket.",
 };
 
-type RouteInput = Pick<TaskAnalysis, "taskType" | "risk" | "areas" | "vague" | "asksForChange">;
+type RouteInput = Pick<TaskAnalysis, "taskType" | "risk" | "areas" | "vague" | "asksForChange"> & {
+  planner?: PlannerResult;
+  riskEngine?: RiskEngineResult;
+};
 
 function toPublic(id: AgentId): PublicAgentName | null {
   return TO_PUBLIC[id] ?? null;
@@ -66,10 +72,6 @@ function skippedFrom(selected: AgentId[], extra: RouteSkip[] = []): RouteSkip[] 
     reason: SKIP_REASON[agent],
   }));
   return [...skips, ...extra.filter((item) => !present.has(item.agent))];
-}
-
-function ship(): AgentId[] {
-  return ["implement", "tests", "pr_review"];
 }
 
 function sensitive(areas: AreaId[]) {
@@ -101,7 +103,37 @@ function makeRoute(
   };
 }
 
+function applyPolicy(agents: AgentId[], input: RouteInput): AgentId[] {
+  const policy = input.riskEngine?.policy ?? policyFor(input.risk, input.vague);
+  const next = [...agents];
+  if (policy.require_security && input.asksForChange && !next.includes("security")) {
+    const at = next.indexOf("implement");
+    next.splice(at >= 0 ? at : next.length, 0, "security");
+  }
+  if (input.asksForChange) {
+    if (!next.includes("implement")) next.push("implement");
+    if (policy.require_tests && !next.includes("tests")) next.push("tests");
+    if (policy.require_review && !next.includes("pr_review")) next.push("pr_review");
+    if (!policy.require_tests) {
+      const i = next.indexOf("tests");
+      if (i >= 0) next.splice(i, 1);
+    }
+    if (!policy.require_review) {
+      const i = next.indexOf("pr_review");
+      if (i >= 0) next.splice(i, 1);
+    }
+  }
+  return next;
+}
+
 export function routeTask(analysis: RouteInput): AgentRoute {
+  const policy = riskPolicyOf({
+    risk: analysis.risk,
+    vague: analysis.vague,
+    riskEngine: analysis.riskEngine ?? { level: analysis.risk, score: 0, factors: [], policy: policyFor(analysis.risk, analysis.vague) },
+  });
+  const shape = analysis.planner?.shape;
+
   if (analysis.vague) {
     return makeRoute("vague", "The ticket is too thin to pick specialists. Research, then a human.", [
       "research",
@@ -113,61 +145,76 @@ export function routeTask(analysis: RouteInput): AgentRoute {
   }
 
   if (analysis.taskType === "architecture") {
-    return makeRoute("architecture", "System design before anyone writes code.", [
-      "research",
-      "architect",
-      "security",
-    ]);
+    const agents: AgentId[] = ["research", "architect"];
+    if (policy.require_security) agents.push("security");
+    return makeRoute("architecture", "System design before anyone writes code.", agents);
+  }
+
+  if (shape === "deploy") {
+    const agents = applyPolicy(["implement"], analysis);
+    return makeRoute(
+      "deploy",
+      "CRITICAL production work. Specialists run, then Result Merger, quality gate, mandatory human, Action.",
+      agents,
+    );
   }
 
   if (isSimpleUi(analysis) && analysis.asksForChange) {
     return makeRoute(
       "ui",
-      "A simple UI change skips requirements, architecture, and security. Developer, tests, then PR Reviewer.",
-      ship(),
+      "LOW risk UI change. Automatic after the quality gate — no human, no architecture parade.",
+      applyPolicy(["implement"], analysis),
     );
   }
 
-  const needsSecurity =
-    analysis.taskType === "security" ||
-    analysis.taskType === "incident" ||
-    analysis.risk === "high" ||
-    analysis.risk === "critical" ||
-    sensitive(analysis.areas);
+  if (shape === "schema") {
+    return makeRoute(
+      "schema",
+      analysis.risk === "high"
+        ? "Destructive schema change. Tests, review, and a human after the quality gate."
+        : "MEDIUM schema change. Testing Agent and PR Reviewer, then Action. No human gate.",
+      applyPolicy(["implement"], analysis),
+    );
+  }
 
   if (analysis.taskType === "incident" || analysis.taskType === "bug") {
     const agents: AgentId[] = ["bug", "research", "rca"];
-    if (needsSecurity) agents.push("security");
-    if (analysis.asksForChange) agents.push(...ship());
+    const routed = applyPolicy(agents, analysis);
     return makeRoute(
       analysis.taskType === "incident" ? "incident" : "bug",
       analysis.taskType === "incident"
         ? "Incidents get investigation and a security pass before any patch."
         : "Bugs get investigation and a locked cause before anyone writes a fix.",
-      agents,
+      routed,
     );
   }
 
   if (analysis.taskType === "security") {
     const agents: AgentId[] = ["research", "security"];
-    if (analysis.asksForChange) agents.push(...ship());
-    return makeRoute("security", "Threat-model first. Then Developer, Testing, and PR Reviewer.", agents);
+    return makeRoute(
+      "security",
+      "HIGH: threat-model first. Then Developer, tests, review, quality gate, human, Action.",
+      applyPolicy(agents, analysis),
+    );
   }
 
   if (analysis.taskType === "tech_debt" || analysis.taskType === "refactor") {
     const agents: AgentId[] = ["tech_debt", "research"];
     if (analysis.risk !== "low") agents.push("architect");
-    if (needsSecurity) agents.push("security");
-    if (analysis.asksForChange) agents.push(...ship());
-    return makeRoute("debt", "Debt work stays proportional. Security only if the area is sensitive.", agents);
+    return makeRoute(
+      "debt",
+      "Debt work stays proportional. Security only if the Risk Engine requires it.",
+      applyPolicy(agents, analysis),
+    );
   }
 
-  const agents: AgentId[] = ["requirements", "architect", "security"];
-  if (analysis.asksForChange) agents.push(...ship());
+  const agents: AgentId[] = ["requirements", "architect"];
   return makeRoute(
     "feature",
-    "A feature request is not a one-shot patch. Requirements, then Architect, then Security, then Developer.",
-    agents,
+    policy.require_security
+      ? "HIGH feature. Requirements, Architect, Security, then Developer."
+      : "MEDIUM feature. Requirements and Architect, then tests and review. No security parade.",
+    applyPolicy(agents, analysis),
   );
 }
 

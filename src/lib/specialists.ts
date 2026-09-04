@@ -1,4 +1,5 @@
-import { evaluatePlan } from "./quality";
+import { compactGate, evaluateRun } from "./quality";
+import { compactMerge } from "./merge";
 import { AGENTS } from "./roster";
 import { hasArea } from "./classify";
 import { isFilled, initSharedState } from "./state";
@@ -6,7 +7,7 @@ import type { AgentId, Artifact, OrchestrationRun, PlanStep, SharedAgentState } 
 
 type Ctx = {
   ticket: string;
-  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts" | "state">;
+  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts" | "state" | "status">;
   step: PlanStep;
 };
 
@@ -542,29 +543,73 @@ function testsArtifact(ctx: Ctx): Artifact {
 }
 
 function evalsArtifact(ctx: Ctx): Artifact {
-  const quality = evaluatePlan(ctx.run.analysis, ctx.run.plan, ctx.ticket);
+  const quality = evaluateRun({
+    ticket: ctx.ticket,
+    analysis: ctx.run.analysis,
+    plan: ctx.run.plan,
+    artifacts: ctx.run.artifacts,
+    state: ctx.run.state,
+    status: ctx.run.status,
+  });
+  const gate = compactGate(quality);
   return {
     agent: "evals",
-    title: quality.ready ? "Quality gate passed" : "Quality gate failed",
-    summary: quality.ready
-      ? `Score ${quality.score}. The plan did not skip required specialists or invert order.`
-      : `Score ${quality.score}. Do not open a PR until the errors are fixed.`,
+    title: gate.verdict === "PASS" ? "Quality gate passed" : "Quality gate failed",
+    summary:
+      gate.verdict === "PASS"
+        ? `Score ${gate.score}. Correctness, security, tests, architecture, regression, and code quality passed.`
+        : `Score ${gate.score}. Fail closed — do not open a PR.`,
     sections: [
       section(
+        "Dimensions",
+        Object.entries(gate.dimensions).map(
+          ([id, row]) => `${row.pass ? "pass" : "fail"}: ${id.replaceAll("_", " ")} · ${row.score}`,
+        ),
+      ),
+      section("Guardrails", [
+        `${gate.guardrails.prompt_injection}: prompt injection`,
+        `${gate.guardrails.rag_poisoning}: RAG poisoning`,
+        `${gate.guardrails.agent_hijacking}: agent hijacking`,
+      ]),
+      section(
         "Checks",
-        quality.checks.map((check) => `${check.pass ? "pass" : check.severity}: ${check.label} — ${check.detail}`),
+        quality.checks.map((item) => `${item.pass ? "pass" : item.severity}: ${item.label} — ${item.detail}`),
       ),
     ],
     findings: quality.checks
-      .filter((check) => !check.pass && check.severity === "error")
-      .map((check) => ({
+      .filter((item) => !item.pass && item.severity === "error")
+      .map((item) => ({
         severity: "blocker" as const,
-        title: check.label,
-        detail: check.detail,
+        title: item.label,
+        detail: item.detail,
       })),
-    recommendation: quality.ready
-      ? "Create PR, then PR Reviewer, then a human if the plan says so."
-      : "Stop. Do not create a PR.",
+    recommendation:
+      gate.verdict === "PASS"
+        ? ctx.run.plan.control.autonomous
+          ? "Quality gate passed. Action is automatic."
+          : "Quality gate passed. Human approval next, then Action."
+        : "Stop. Do not take Action.",
+  };
+}
+
+function mergeArtifact(ctx: Ctx): Artifact {
+  const merged = compactMerge(stateOf(ctx));
+  return {
+    agent: "merge",
+    title: merged.recommendation === "hold" ? "Merged result — hold" : "Merged result",
+    summary: "Specialist outputs are folded into one object before the quality gate.",
+    sections: [
+      section("files_changed", merged.files_changed.length ? merged.files_changed : ["(none yet)"]),
+      section("tests", merged.tests.length ? merged.tests : ["(none)"]),
+      section(
+        "security_findings",
+        merged.security_findings.length
+          ? merged.security_findings.map((item) => item.title)
+          : ["(none)"],
+      ),
+    ],
+    findings: merged.security_findings.filter((item) => item.severity === "blocker"),
+    recommendation: merged.recommendation === "hold" ? "Hold. Do not send to Action." : "Quality gate next.",
   };
 }
 
@@ -575,18 +620,18 @@ function prArtifact(ctx: Ctx): Artifact {
   return {
     agent: "pr",
     title,
-    summary: "PR is drafted after evals. It is not merged.",
+    summary: "Action is drafted after the quality gate. It is not merged.",
     sections: [
       section("Body", [
         ctx.ticket.trim(),
         `Risk: ${ctx.run.analysis.risk}. Area: ${ctx.run.analysis.area}.`,
         ctx.run.plan.humanApprovalRequired
           ? "Do not merge without human approval."
-          : "Evals passed. Reviewer still runs.",
+          : "LOW/MEDIUM: Action is automatic after a passing quality gate.",
       ]),
     ],
     findings: [],
-    recommendation: "PR Reviewer next.",
+    recommendation: "Done. The orchestrator does not merge.",
   };
 }
 
@@ -600,8 +645,8 @@ function reviewArtifact(ctx: Ctx): Artifact {
 
   return {
     agent: "pr_review",
-    title: "Review of the proposed PR",
-    summary: "The orchestrator does not approve its own PR. A reviewer agent looks at evidence.",
+    title: "Review of the proposed change",
+    summary: "Reviewer looks at the diff and tests before Result Merger. Not a rubber stamp.",
     sections: [
       ...(fromState.length ? [section("From shared state", fromState)] : []),
       section("Lenses", [
@@ -621,9 +666,7 @@ function reviewArtifact(ctx: Ctx): Artifact {
           },
         ]
       : [],
-    recommendation: ctx.run.plan.humanApprovalRequired
-      ? "Stop for Human Approval."
-      : "Ready for a person to merge if policy allows.",
+    recommendation: "Result Merger next.",
   };
 }
 
@@ -641,7 +684,7 @@ function approvalArtifact(ctx: Ctx): Artifact {
           ? "Is this even a change request?"
           : gate === "plan"
             ? "Is this the right change, and may Developer start?"
-            : "Did tests and Security land in shared state, and may a PR be opened?",
+            : "Did tests, review, and Security land in the merged result, and may Action run?",
         "Did Security Review run before the Developer Agent?",
         "The orchestrator will not merge.",
       ]),
@@ -659,7 +702,7 @@ function approvalArtifact(ctx: Ctx): Artifact {
     recommendation:
       gate === "plan"
         ? "Approve to let Implementation start, or reject the plan."
-        : "Approve to open a PR, or reject. Nothing merges itself.",
+        : "Approve to take Action, or reject. Nothing merges itself.",
   };
 }
 
@@ -673,10 +716,11 @@ const BUILDERS: Record<AgentId, (ctx: Ctx) => Artifact> = {
   security: securityArtifact,
   implement: implementArtifact,
   tests: testsArtifact,
-  evals: evalsArtifact,
-  pr: prArtifact,
   pr_review: reviewArtifact,
+  merge: mergeArtifact,
+  evals: evalsArtifact,
   approval: approvalArtifact,
+  pr: prArtifact,
 };
 
 export function runSpecialist(ctx: Ctx): Artifact {

@@ -58,13 +58,20 @@ function applySpecialist(run: OrchestrationRun, index: number, onEvent?: (event:
   onEvent?.({ type: "state", run: snapshot(run) });
 }
 
-function completeRun(run: OrchestrationRun) {
+function completeRun(run: OrchestrationRun, failedClosed = false) {
   run.status = "complete";
   run.pendingGate = null;
   run.state = setStateStatus(run.state, "complete");
   run.quality = evaluateRun(run);
-  run.currentStepId = run.plan.steps.at(-1)?.id ?? null;
+  run.currentStepId = failedClosed
+    ? (run.plan.steps.find((step) => step.agent === "evals")?.id ?? run.currentStepId)
+    : (run.plan.steps.at(-1)?.id ?? null);
   return run;
+}
+
+function evalsFailed(run: OrchestrationRun) {
+  run.quality = evaluateRun(run);
+  return !run.quality.ready;
 }
 
 function pauseAtGate(run: OrchestrationRun, index: number, gate: GateId) {
@@ -85,6 +92,9 @@ function processSteps(
   for (let index = from; index < run.plan.steps.length; index += 1) {
     const step = run.plan.steps[index];
     applySpecialist(run, index, onEvent);
+    if (step.agent === "evals" && evalsFailed(run)) {
+      return completeRun(run, true);
+    }
     if (!step.gate) continue;
 
     if (options.autoApprove) {
@@ -150,6 +160,11 @@ export async function executePlanAsync(
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     const step = run.plan.steps[index];
     applySpecialist(run, index, onEvent);
+    if (step.agent === "evals" && evalsFailed(run)) {
+      completeRun(run, true);
+      onEvent?.({ type: "run", run });
+      return run;
+    }
     if (step.gate) {
       pauseAtGate(run, index, step.gate);
       onEvent?.({ type: "run", run });

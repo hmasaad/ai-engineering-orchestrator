@@ -2,6 +2,7 @@ import { AGENTS } from "./roster";
 import { hasArea } from "./classify";
 import { buildControlPolicy } from "./control";
 import { isSimpleUi, routeTask } from "./router";
+import { riskPolicyOf } from "./risk";
 import type {
   AgentId,
   ControlGate,
@@ -31,18 +32,20 @@ const WHY: Record<AgentId, (analysis: TaskAnalysis, gate?: GateId) => string> = 
       : "Threat-model the change before generating a fix.",
   implement: (a) =>
     isSimpleUi(a)
-      ? "A simple UI change can go straight to a scoped patch after ship approval."
+      ? "LOW risk UI patch. Write the scoped change; the quality gate still runs."
       : "Only now write the scoped change. Not a one-shot LLM solve.",
   tests: (a) => `Cover the ${a.area} change so the next edit does not regress it.`,
-  evals: () => "Score routing, order, and evidence. Fail closed if the plan cheated.",
-  pr: () => "Open a PR only after the quality gate and ship approval pass.",
-  pr_review: () => "A specialist reviewer looks at the PR. The orchestrator does not rubber-stamp it.",
+  pr_review: () => "Review the merged change with evidence before the quality gate.",
+  merge: () => "Fold specialist outputs into one result before the quality gate.",
+  evals: () =>
+    "Score correctness, security, tests, architecture, regression, and code quality. Fail closed.",
   approval: (a, gate) =>
     a.vague
       ? "A human must decide what this ticket even is."
       : gate === "plan"
         ? "A person must approve the plan before Implementation."
-        : "A person must approve before a PR is opened. Nothing merges itself.",
+        : "A person must approve after the quality gate. Then Action.",
+  pr: () => "Action: open a PR only after the quality gate (and human, when required). Nothing merges.",
 };
 
 const BEFORE_AGENT: Record<ControlGate["before"], AgentId | null> = {
@@ -51,25 +54,22 @@ const BEFORE_AGENT: Record<ControlGate["before"], AgentId | null> = {
   end: null,
 };
 
-/** Specialists only. Control gates are inserted in buildPlan. */
+/** Specialists only. Merger, evals, Action, and control gates are inserted in buildPlan. */
 export function expandRoute(route: ReturnType<typeof routeTask>, analysis: TaskAnalysis): AgentId[] {
   const agents = [...route.agents];
   const shipping = agents.includes("implement") || agents.includes("pr_review") || agents.includes("tests");
 
   if (shipping) {
-    if (!agents.includes("evals")) {
-      const at = agents.indexOf("pr_review");
-      agents.splice(at >= 0 ? at : agents.length, 0, "evals");
-    }
-    if (!agents.includes("pr") && agents.includes("pr_review")) {
-      agents.splice(agents.indexOf("pr_review"), 0, "pr");
-    }
+    if (!agents.includes("merge")) agents.push("merge");
+    if (!agents.includes("evals")) agents.push("evals");
+    if (!agents.includes("pr")) agents.push("pr");
   }
 
+  void analysis;
   return agents;
 }
 
-function approvalStep(gate: ControlGate, analysis: TaskAnalysis, prevId: string | undefined): PlanStep {
+function approvalStep(gate: ControlGate, analysis: TaskAnalysis, prevId: string | undefined, wave: number): PlanStep {
   return {
     id: `gate-${gate.id}`,
     agent: "approval",
@@ -78,10 +78,16 @@ function approvalStep(gate: ControlGate, analysis: TaskAnalysis, prevId: string 
     requiresApproval: true,
     dependsOn: prevId ? [prevId] : [],
     gate: gate.id,
+    wave,
   };
 }
 
-function specialistStep(agent: AgentId, analysis: TaskAnalysis, prevId: string | undefined): PlanStep {
+function specialistStep(
+  agent: AgentId,
+  analysis: TaskAnalysis,
+  prevId: string | undefined,
+  wave: number,
+): PlanStep {
   return {
     id: `step-${agent}`,
     agent,
@@ -89,37 +95,59 @@ function specialistStep(agent: AgentId, analysis: TaskAnalysis, prevId: string |
     why: WHY[agent](analysis),
     requiresApproval: false,
     dependsOn: prevId ? [prevId] : [],
+    wave,
   };
+}
+
+function nextWave(prev: PlanStep | undefined, agent: AgentId): number {
+  const base = prev?.wave ?? 0;
+  if (
+    prev &&
+    (agent === "tests" || agent === "pr_review") &&
+    (prev.agent === "tests" || prev.agent === "pr_review")
+  ) {
+    return prev.wave;
+  }
+  return base + 1;
 }
 
 export function buildPlan(analysis: TaskAnalysis): ExecutionPlan {
   const route = analysis.route ?? routeTask(analysis);
   const agents = expandRoute(route, analysis);
   const control = buildControlPolicy(analysis, agents);
+  const policy = riskPolicyOf(analysis);
 
   const steps: PlanStep[] = [];
   const inserted = new Set<GateId>();
-
-  const push = (step: PlanStep) => {
-    steps.push(step);
-  };
 
   for (const agent of agents) {
     for (const item of control.gates) {
       if (inserted.has(item.id)) continue;
       if (BEFORE_AGENT[item.before] === agent) {
-        push(approvalStep(item, analysis, steps.at(-1)?.id));
+        const wave = nextWave(steps.at(-1), "approval");
+        steps.push(approvalStep(item, analysis, steps.at(-1)?.id, wave));
         inserted.add(item.id);
       }
     }
-    push(specialistStep(agent, analysis, steps.at(-1)?.id));
+    const wave = nextWave(steps.at(-1), agent);
+    steps.push(specialistStep(agent, analysis, steps.at(-1)?.id, wave));
   }
 
   for (const item of control.gates) {
     if (!inserted.has(item.id) && item.before === "end") {
-      push(approvalStep(item, analysis, steps.at(-1)?.id));
+      steps.push(approvalStep(item, analysis, steps.at(-1)?.id, nextWave(steps.at(-1), "approval")));
     }
   }
+
+  const principle = analysis.vague
+    ? "Do not ask one model to guess the ticket. Ask for evidence, then a human."
+    : policy.action === "automatic"
+      ? "LOW risk. Planner + Risk Engine → specialists → merger → quality gate → Action. No human gate."
+      : policy.action === "tests_review"
+        ? "MEDIUM risk. Tests and review must run. Action is automatic after the quality gate."
+        : policy.action === "mandatory_human"
+          ? "CRITICAL. Mandatory human after the quality gate. The orchestrator never takes Action alone."
+          : "HIGH risk. Security Review before the patch. Human approval after the quality gate, then Action.";
 
   return {
     steps,
@@ -127,11 +155,7 @@ export function buildPlan(analysis: TaskAnalysis): ExecutionPlan {
     approvalReason: control.gates.map((item) => item.reason).join(" "),
     route,
     control,
-    principle: analysis.vague
-      ? "Do not ask one model to guess the ticket. Ask for evidence, then a human."
-      : isSimpleUi(analysis)
-        ? "A simple UI change is not a feature parade, but a person still approves before a PR."
-        : "Agents do not run autonomously. Plan approval, then code, then ship approval, then a PR.",
+    principle,
   };
 }
 

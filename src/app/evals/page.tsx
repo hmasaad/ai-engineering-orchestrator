@@ -32,6 +32,11 @@ type CaseResult = {
     dimensions: Dimension[];
     assertions: Assertion[];
   };
+  gate?: {
+    verdict?: string;
+    score: number;
+    ready: boolean;
+  };
 };
 
 type ScenarioResult = {
@@ -83,7 +88,8 @@ export default function EvalsPage() {
         <h1 className="mt-2 font-serif text-4xl text-navy">Orchestrator evals</h1>
         <p className="mt-4 max-w-2xl text-ink-soft">
           This is not another prompt. Gold tickets must route to the right specialists in the right
-          order. Attack plans — skip security, skip the human, one-shot a fix — must fail.
+          order. The Risk Engine sets LOW (automatic), MEDIUM (tests + review), HIGH (security +
+          human), or CRITICAL (mandatory human). Attack plans that skip that policy must fail.
         </p>
 
         {error && <p className="mt-6 text-sm text-stamp">{error}</p>}
@@ -136,6 +142,7 @@ export default function EvalsPage() {
                       <Bar value={scenario.gold.score.score} tone="gold" />
                       <p className={`mt-2 font-mono text-[11px] uppercase ${scenario.gold.ok ? "text-sage" : "text-stamp"}`}>
                         {scenario.gold.ok ? "pass" : "fail"}
+                        {scenario.gold.gate?.verdict ? ` · gate ${scenario.gold.gate.verdict}` : ""}
                       </p>
                       <ul className="mt-3 space-y-1">
                         {scenario.gold.score.assertions

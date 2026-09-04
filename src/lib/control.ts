@@ -1,4 +1,4 @@
-import { isSimpleUi } from "./router";
+import { riskPolicyOf } from "./risk";
 import type {
   AgentId,
   ControlGate,
@@ -27,10 +27,20 @@ const KIND_HINTS: Record<Exclude<ControlKind, "security_sensitive">, string[]> =
     "database migration",
     "schema migration",
     "alter table",
-    "add column",
     "drop column",
     "migrate the database",
     "migration that",
+  ],
+  schema_change: [
+    "add a field",
+    "add a database field",
+    "add database field",
+    "add a column",
+    "add column",
+    "add an index",
+    "add a db field",
+    "new column",
+    "new database field",
   ],
   destructive: [
     "drop table",
@@ -76,7 +86,7 @@ function any(text: string, needles: string[]) {
 
 export function detectControlKinds(
   ticket: string,
-  analysis: Pick<TaskAnalysis, "taskType" | "risk" | "areas" | "vague">,
+  analysis: Pick<TaskAnalysis, "taskType" | "areas" | "vague">,
 ): ControlKind[] {
   const kinds = new Set<ControlKind>();
   for (const [kind, hints] of Object.entries(KIND_HINTS) as [
@@ -87,28 +97,14 @@ export function detectControlKinds(
   }
   if (
     analysis.taskType === "security" ||
-    analysis.risk === "high" ||
-    analysis.risk === "critical" ||
     analysis.areas.some((id) => (HIGH_RISK_AREAS as readonly string[]).includes(id))
   ) {
     kinds.add("security_sensitive");
   }
-  return [...kinds];
-}
-
-export function bumpRiskForControl(
-  risk: TaskAnalysis["risk"],
-  kinds: ControlKind[],
-): TaskAnalysis["risk"] {
-  if (
-    kinds.includes("destructive") ||
-    kinds.includes("production_deploy") ||
-    kinds.includes("database_migration")
-  ) {
-    if (risk === "critical") return "critical";
-    return "high";
+  if (kinds.has("schema_change") && (kinds.has("destructive") || any(ticket, ["drop table", "drop column"]))) {
+    kinds.delete("schema_change");
   }
-  return risk;
+  return [...kinds];
 }
 
 function gate(
@@ -129,14 +125,8 @@ export function buildControlPolicy(
   agents: AgentId[],
 ): ControlPolicy {
   const kinds = analysis.controlKinds ?? [];
+  const riskPolicy = riskPolicyOf(analysis);
   const shipping = agents.includes("implement") || agents.includes("pr");
-  const especially =
-    kinds.includes("production_deploy") ||
-    kinds.includes("database_migration") ||
-    kinds.includes("destructive") ||
-    kinds.includes("dependency_upgrade") ||
-    kinds.includes("infrastructure") ||
-    kinds.includes("security_sensitive");
   const gates: ControlGate[] = [];
 
   if (analysis.vague) {
@@ -147,61 +137,53 @@ export function buildControlPolicy(
         "The ticket is incomplete. A human must clarify before any change is generated.",
       ),
     );
-    return { autonomous: false, kinds, gates };
+    return {
+      autonomous: false,
+      kinds,
+      gates,
+      risk: analysis.risk,
+      action: riskPolicy.action,
+    };
   }
 
   if (analysis.taskType === "research" && !shipping) {
-    return { autonomous: true, kinds, gates };
+    return {
+      autonomous: true,
+      kinds,
+      gates,
+      risk: analysis.risk,
+      action: "automatic",
+    };
   }
 
-  const needsPlan =
-    shipping &&
-    agents.includes("implement") &&
-    (especially ||
-      analysis.taskType === "bug" ||
-      analysis.taskType === "incident" ||
-      analysis.taskType === "feature" ||
-      analysis.taskType === "architecture" ||
-      analysis.taskType === "security" ||
-      analysis.taskType === "tech_debt") &&
-    !(isSimpleUi(analysis) && !especially);
-
-  if (needsPlan) {
-    const why = kinds.includes("production_deploy")
-      ? "Production deployments are not autonomous. Approve the plan before Implementation."
-      : kinds.includes("destructive") || kinds.includes("database_migration")
-        ? "Destructive or migration work needs a human on the plan before anyone writes code."
-        : kinds.includes("infrastructure")
-          ? "Infrastructure changes need a human on the plan before Implementation."
-          : kinds.includes("dependency_upgrade")
-            ? "Dependency upgrades can break production. Approve the plan first."
-            : kinds.includes("security_sensitive")
-              ? "Security-sensitive change. Approve the plan before Implementation."
-              : "A person must approve the plan before Developer writes code.";
-    gates.push(gate("plan", "developer", why));
-  }
-
-  if (shipping && agents.includes("pr")) {
-    const why = especially
-      ? "A person must approve after Testing (and Security) before a PR is opened."
-      : "Agents do not open PRs on their own. Approve before Create PR.";
-    gates.push(gate("ship", "pr", why));
-  }
-
-  if (!shipping && analysis.taskType === "incident") {
-    gates.push(gate("plan", "end", "Incidents always stop for a human."));
+  if (riskPolicy.require_human) {
+    const why =
+      analysis.risk === "critical" || kinds.includes("production_deploy")
+        ? "CRITICAL: mandatory human approval after the quality gate. The orchestrator will not take Action alone."
+        : kinds.includes("destructive") || kinds.includes("database_migration")
+          ? "Destructive or migration work needs a human after the quality gate."
+          : "HIGH: Security already ran. A person approves after the quality gate, before Action.";
+    if (shipping && agents.includes("pr")) {
+      gates.push(gate("ship", "pr", why));
+    } else {
+      gates.push(gate("plan", "end", why));
+    }
   }
 
   return {
     autonomous: gates.length === 0,
     kinds,
     gates,
+    risk: analysis.risk,
+    action: riskPolicy.action,
   };
 }
 
 export function compactControl(policy: ControlPolicy) {
   return {
     autonomous: policy.autonomous,
+    risk: policy.risk,
+    action: policy.action,
     kinds: policy.kinds,
     gates: policy.gates.map((item) => ({
       id: item.id,
@@ -211,11 +193,12 @@ export function compactControl(policy: ControlPolicy) {
 }
 
 export const CONTROL_PHASES = [
-  "Planning",
+  "Planner",
+  "Risk Engine",
+  "Agent Router",
+  "Agents",
+  "Result Merger",
+  "Quality Gate",
   "Human Approval",
-  "Implementation",
-  "Testing",
-  "Security",
-  "Human Approval",
-  "PR",
+  "Action",
 ] as const;

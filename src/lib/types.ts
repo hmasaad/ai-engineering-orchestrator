@@ -47,10 +47,11 @@ export type AgentId =
   | "security"
   | "implement"
   | "tests"
-  | "evals"
-  | "pr"
   | "pr_review"
-  | "approval";
+  | "merge"
+  | "evals"
+  | "approval"
+  | "pr";
 
 /** Specialist names the Agent Router returns. Control-plane steps (evals, create PR, human) are added later. */
 export type PublicAgentName =
@@ -68,6 +69,8 @@ export type PublicAgentName =
 export type RoutePattern =
   | "feature"
   | "ui"
+  | "schema"
+  | "deploy"
   | "bug"
   | "incident"
   | "security"
@@ -110,10 +113,53 @@ export type GateId = "plan" | "ship";
 export type ControlKind =
   | "production_deploy"
   | "database_migration"
+  | "schema_change"
   | "destructive"
   | "security_sensitive"
   | "dependency_upgrade"
   | "infrastructure";
+
+export type PlannerShape =
+  | "clarify"
+  | "research"
+  | "ui-patch"
+  | "schema"
+  | "feature"
+  | "fix"
+  | "incident"
+  | "security"
+  | "deploy"
+  | "debt";
+
+export type PlannerResult = {
+  intent: "clarify" | "research" | "change" | "respond";
+  change: string;
+  shape: PlannerShape;
+  constraints: string[];
+};
+
+export type RiskAction = "automatic" | "tests_review" | "security_human" | "mandatory_human";
+
+export type RiskPolicy = {
+  autonomous: boolean;
+  require_tests: boolean;
+  require_review: boolean;
+  require_security: boolean;
+  require_human: boolean;
+  action: RiskAction;
+};
+
+export type RiskFactor = {
+  id: string;
+  label: string;
+};
+
+export type RiskEngineResult = {
+  level: Risk;
+  score: number;
+  factors: RiskFactor[];
+  policy: RiskPolicy;
+};
 
 export type ControlGate = {
   id: GateId;
@@ -126,6 +172,8 @@ export type ControlPolicy = {
   autonomous: boolean;
   kinds: ControlKind[];
   gates: ControlGate[];
+  risk: Risk;
+  action: RiskAction;
 };
 
 export type MissingQuestion = {
@@ -151,6 +199,8 @@ export type TaskAnalysis = {
   vague: boolean;
   missing: MissingQuestion[];
   controlKinds: ControlKind[];
+  planner: PlannerResult;
+  riskEngine: RiskEngineResult;
 };
 
 export type PlanStep = {
@@ -161,6 +211,8 @@ export type PlanStep = {
   requiresApproval: boolean;
   dependsOn: string[];
   gate?: GateId;
+  /** Specialists in the same wave may run in parallel. */
+  wave: number;
 };
 
 export type ExecutionPlan = {
@@ -192,8 +244,36 @@ export type Artifact = {
   recommendation: string;
 };
 
+export type EvalDimensionId =
+  | "correctness"
+  | "security"
+  | "tests"
+  | "architecture"
+  | "regression"
+  | "code_quality";
+
+export type DimensionVerdict = {
+  pass: boolean;
+  score: number;
+};
+
+export type GuardrailVerdict = "pass" | "fail";
+
+/** Compact Evaluation / Quality Gate output. */
+export type QualityGate = {
+  verdict: "PASS" | "FAIL";
+  score: number;
+  dimensions: Record<EvalDimensionId, DimensionVerdict>;
+  guardrails: {
+    prompt_injection: GuardrailVerdict;
+    rag_poisoning: GuardrailVerdict;
+    agent_hijacking: GuardrailVerdict;
+  };
+};
+
 export type QualityCheck = {
   id: string;
+  dimension: EvalDimensionId;
   label: string;
   pass: boolean;
   severity: "error" | "warning";
@@ -202,10 +282,13 @@ export type QualityCheck = {
 
 export type QualityReport = {
   ready: boolean;
+  verdict: "PASS" | "FAIL";
   score: number;
   errorCount: number;
   warningCount: number;
   checks: QualityCheck[];
+  dimensions: Record<EvalDimensionId, DimensionVerdict>;
+  guardrails: QualityGate["guardrails"];
 };
 
 export type ApprovalRecord = {
@@ -240,6 +323,14 @@ export type SharedReview = {
   findings: SharedFinding[];
 };
 
+export type MergedResult = {
+  files_changed: string[];
+  tests: string[];
+  security_findings: SharedFinding[];
+  review: SharedReview | Record<string, never>;
+  recommendation: "quality_gate" | "hold" | "action";
+};
+
 /**
  * Compact shared blackboard. Agents read and write these keys.
  * Empty objects/arrays mean that specialist has not written yet.
@@ -252,6 +343,7 @@ export type SharedAgentState = {
   security_findings: SharedFinding[];
   tests: string[];
   review: SharedReview | Record<string, never>;
+  merged: MergedResult | Record<string, never>;
   status: RunStatus;
 };
 

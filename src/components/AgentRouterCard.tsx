@@ -22,7 +22,7 @@ export function AgentRouterCard({ route }: { route: AgentRoute }) {
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        2. Agent router
+        4. Agent router
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">{PATTERN_LABEL[route.pattern]}</p>
       <p className="mt-2 text-sm text-ink-soft">{route.reason}</p>

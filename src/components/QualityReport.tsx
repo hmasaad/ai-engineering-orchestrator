@@ -1,6 +1,8 @@
 import type { QualityReport as Report } from "@/lib/types";
+import { EVAL_DIMENSIONS } from "@/lib/quality";
 
 export function QualityReport({ report }: { report: Report }) {
+  const passed = report.verdict ? report.verdict === "PASS" : report.ready;
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -8,14 +10,29 @@ export function QualityReport({ report }: { report: Report }) {
           <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
             Evals / quality gate
           </p>
-          <h2 className="font-serif text-2xl text-navy">
-            {report.ready ? "Gate passed" : "Gate failed"}
-          </h2>
+          <h2 className="font-serif text-2xl text-navy">{passed ? "PASS" : "FAIL"}</h2>
         </div>
         <p className="font-mono text-sm text-ink-soft">
           score {report.score} · {report.errorCount} errors · {report.warningCount} warnings
         </p>
       </div>
+      {report.dimensions ? (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {EVAL_DIMENSIONS.map((dim) => {
+            const row = report.dimensions[dim.id];
+            return (
+              <span
+                key={dim.id}
+                className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${
+                  row?.pass !== false ? "border-navy bg-navy text-paper" : "border-stamp bg-stamp/15 text-stamp"
+                }`}
+              >
+                {dim.label} · {row?.score ?? 0}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
       <ul className="mt-4 grid gap-2">
         {report.checks.map((item) => (
           <li

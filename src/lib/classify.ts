@@ -1,10 +1,11 @@
 import { TASK_TYPE_LABEL } from "./roster";
-import { bumpRiskForControl, detectControlKinds } from "./control";
+import { detectControlKinds } from "./control";
+import { buildPlanner } from "./planner";
+import { scoreRisk } from "./risk";
 import { routeTask } from "./router";
 import type {
   AreaId,
   MissingQuestion,
-  Risk,
   TaskAnalysis,
   TaskInput,
   TaskType,
@@ -208,21 +209,19 @@ const PII_HINTS = ["pii", "phi", "patient", "gdpr", "personal data", "email addr
 
 const BOOKING_HINTS = ["book", "booking", "appointment", "salon", "slot", "stylist"];
 
+const SCHEMA_HINTS = [
+  "database field",
+  "add a field",
+  "add a column",
+  "add column",
+  "users table",
+  "schema",
+  "last_login",
+];
+
 const UI_HINTS = ["css", "ui", "button", "screen", "layout", "copy", "typo", "settings screen"];
 
 const DOCS_HINTS = ["readme", "docs", "documentation", "comment", "typo"];
-
-const CRITICAL_HINTS = [
-  "p0",
-  "sev1",
-  "outage",
-  "data loss",
-  "rce",
-  "auth bypass",
-  "double-charge",
-  "double charge",
-  "production is down",
-];
 
 const VAGUE_EXACT = [
   "fix",
@@ -285,8 +284,6 @@ const AREA_ORDER: AreaId[] = [
   "application",
 ];
 
-const HIGH_RISK_AREAS: AreaId[] = ["authentication", "payments", "privacy", "security"];
-
 export function asTaskInput(input: TaskInput | string): TaskInput {
   if (typeof input === "string") return { task: input };
   return {
@@ -347,6 +344,7 @@ export function detectAreas(input: TaskInput | string): AreaId[] {
   if (any(corpus, PAYMENT_HINTS)) found.add("payments");
   if (any(corpus, PII_HINTS)) found.add("privacy");
   if (any(corpus, BOOKING_HINTS)) found.add("booking");
+  if (any(corpus, SCHEMA_HINTS) && !identity) found.add("backend");
   if (any(corpus, DOCS_HINTS) && !any(corpus, BUG_HINTS)) found.add("documentation");
   if (any(corpus, UI_HINTS) && !identity) found.add("ui");
   if (any(corpus, ARCH_HINTS)) found.add("platform");
@@ -419,29 +417,6 @@ function detectType(ticket: string, vague: boolean, branch?: string): TaskType {
   return "feature";
 }
 
-function detectRisk(
-  ticket: string,
-  taskType: TaskType,
-  areas: AreaId[],
-  vague: boolean,
-): Risk {
-  if (any(ticket, CRITICAL_HINTS) || taskType === "incident") return "critical";
-  if (vague && taskType === "research") return "low";
-  const sensitive = areas.some((id) => HIGH_RISK_AREAS.includes(id));
-  if (sensitive || taskType === "security") {
-    if (taskType === "research") return "medium";
-    return "high";
-  }
-  if (taskType === "architecture") return "medium";
-  if (areas.every((id) => id === "ui" || id === "documentation" || id === "frontend") && areas.length > 0) {
-    if (taskType === "bug") return "medium";
-    return "low";
-  }
-  if (taskType === "bug") return "medium";
-  if (taskType === "tech_debt" || taskType === "refactor") return "low";
-  return "medium";
-}
-
 function asksForChange(ticket: string, taskType: TaskType, vague: boolean) {
   if (vague) return false;
   if (taskType === "research" || taskType === "architecture") return false;
@@ -489,11 +464,20 @@ export function understandTask(input: TaskInput | string): TaskAnalysis {
   if (!vague && taskType === "research" && branchType(parsed.branch) === "feature") {
     taskType = "feature";
   }
-  let risk = detectRisk(text, taskType, areas, vague);
-  const controlKinds = detectControlKinds(text, { taskType, risk, areas, vague });
-  risk = bumpRiskForControl(risk, controlKinds);
+  const controlKinds = detectControlKinds(text, { taskType, areas, vague });
+  const planner = buildPlanner({ ticket: text, taskType, vague, kinds: controlKinds });
+  const riskEngine = scoreRisk({ ticket: text, taskType, areas, vague, kinds: controlKinds });
+  const risk = riskEngine.level;
   const change = asksForChange(text, taskType, vague);
-  const route = routeTask({ taskType, risk, areas, vague, asksForChange: change });
+  const route = routeTask({
+    taskType,
+    risk,
+    areas,
+    vague,
+    asksForChange: change,
+    planner,
+    riskEngine,
+  });
   const corpus = corpusOf(parsed);
   const signals = [
     ...hits(corpus, INCIDENT_HINTS).map((s) => `incident:${s.trim()}`),
@@ -528,6 +512,8 @@ export function understandTask(input: TaskInput | string): TaskAnalysis {
     vague,
     missing: missingQuestions(text, vague, areas),
     controlKinds,
+    planner,
+    riskEngine,
   };
   return analysis;
 }

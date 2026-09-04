@@ -1,4 +1,5 @@
 import { isSimpleUi } from "./router";
+import { compactMerge } from "./merge";
 import { hasArea } from "./classify";
 import type {
   AgentId,
@@ -28,6 +29,7 @@ export function initSharedState(task: string, status: RunStatus = "planned"): Sh
     security_findings: [],
     tests: [],
     review: {},
+    merged: {},
     status,
   };
 }
@@ -41,6 +43,7 @@ export function compactState(state: SharedAgentState): SharedAgentState {
     security_findings: [...state.security_findings],
     tests: [...state.tests],
     review: state.review,
+    merged: state.merged,
     status: state.status,
   };
 }
@@ -70,6 +73,9 @@ function filesFor(analysis: TaskAnalysis, task: string): string[] {
   }
   if (hasArea(analysis, "booking")) {
     return ["src/booking/reminders.ts", "src/notify/appointment.ts"];
+  }
+  if (analysis.planner?.shape === "schema" || analysis.controlKinds.includes("schema_change")) {
+    return ["src/db/migrations/add_field.sql", "src/models/account.ts"];
   }
   const slug = task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   return [`src/${analysis.areas[0] ?? "app"}/${slug || "change"}.ts`];
@@ -154,6 +160,9 @@ export function writeSharedState(
       break;
     case "pr_review":
       next.review = asReview(artifact);
+      break;
+    case "merge":
+      next.merged = compactMerge(next);
       break;
     default:
       break;

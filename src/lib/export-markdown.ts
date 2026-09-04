@@ -54,7 +54,14 @@ Human approval: ${run.plan.humanApprovalRequired ? run.plan.approvalReason : "no
 
 ## Quality gate
 
-Score ${run.quality.score}. ${run.quality.ready ? "Ready." : "Not ready."} ${run.quality.errorCount} errors.
+Score ${run.quality.score}. ${run.quality.verdict ?? (run.quality.ready ? "PASS" : "FAIL")}. ${run.quality.errorCount} errors.
+
+${"```json\n" + JSON.stringify(run.quality.dimensions ? {
+  verdict: run.quality.verdict ?? (run.quality.ready ? "PASS" : "FAIL"),
+  score: run.quality.score,
+  dimensions: run.quality.dimensions,
+  guardrails: run.quality.guardrails,
+} : { score: run.quality.score, ready: run.quality.ready }, null, 2) + "\n```"}
 
 ## Artifacts
 

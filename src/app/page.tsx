@@ -7,12 +7,17 @@ import { AgentProgress } from "@/components/AgentProgress";
 import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
 import { ControlCard } from "@/components/ControlCard";
+import { EvalGateCard } from "@/components/EvalGateCard";
 import { PlanView } from "@/components/PlanView";
+import { PlannerCard } from "@/components/PlannerCard";
+import { ResultMergerCard } from "@/components/ResultMergerCard";
+import { RiskEngineCard } from "@/components/RiskEngineCard";
 import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
 import { describeStep, readSse } from "@/lib/client";
 import { understandTask } from "@/lib/classify";
 import { buildPlan } from "@/lib/plan";
+import { compactGate, evaluatePlan } from "@/lib/quality";
 import { SAMPLE_TICKETS, sampleToInput } from "@/lib/samples";
 import { draftState } from "@/lib/state";
 import { saveRun } from "@/lib/storage";
@@ -36,6 +41,10 @@ export default function HomePage() {
   );
   const plan = useMemo(() => buildPlan(analysis), [analysis]);
   const emptyState = useMemo(() => draftState(ticket), [ticket]);
+  const draftGate = useMemo(
+    () => compactGate(evaluatePlan(analysis, plan, ticket)),
+    [analysis, plan, ticket],
+  );
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("sample");
@@ -117,8 +126,9 @@ export default function HomePage() {
           </h1>
           <p className="mt-4 max-w-xl text-ink-soft">
             The orchestrator starts with Task Understanding, then the Agent Router picks specialists.
-            Those specialists write to one shared state object. Humans approve the plan and the ship
-            — agents do not run autonomously. High-risk work stops twice.
+            The orchestrator starts with Task Understanding, then a Planner and Risk Engine run side
+            by side. The router picks specialists from that risk. Results merge, evals fail closed,
+            and a human is required only when risk is HIGH or CRITICAL.
           </p>
 
           <label className="mt-8 block">
@@ -211,8 +221,12 @@ export default function HomePage() {
 
           <div className="mt-8 grid gap-4">
             <TaskAnalysisCard analysis={analysis} />
+            {analysis.planner ? <PlannerCard planner={analysis.planner} /> : null}
+            {analysis.riskEngine ? <RiskEngineCard engine={analysis.riskEngine} /> : null}
             {analysis.route ? <AgentRouterCard route={analysis.route} /> : null}
             <SharedStateCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <ResultMergerCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <EvalGateCard gate={draftGate} />
             <ControlCard control={plan.control} />
             <PlanView plan={plan} />
           </div>
@@ -223,7 +237,7 @@ export default function HomePage() {
             Dispatch graph
           </p>
           <p className="mt-1 text-sm text-ink-soft">
-            The graph is the route for this ticket, not a fixed pipeline.
+            The graph is Planner + Risk Engine → specialists → merger → gate.
           </p>
           <div className="mt-6">
             <AgentGraph
