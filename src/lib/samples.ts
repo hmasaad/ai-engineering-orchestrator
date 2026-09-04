@@ -1,17 +1,36 @@
 import { executePlan } from "./orchestrate";
-import type { OrchestrationRun } from "./types";
+import type { OrchestrationRun, TaskInput } from "./types";
 
 export type SampleTicket = {
   id: string;
   label: string;
   expected: string;
   ticket: string;
+  repository?: string;
+  branch?: string;
 };
 
 export const LOGOUT_TICKET =
   "Users are getting logged out randomly after upgrading the app.";
 
+export const GOOGLE_LOGIN_TICKET = "Add social login with Google";
+
+export const UI_BUTTON_TICKET = "Change the primary button on the settings screen to navy.";
+
+export const PRODUCTION_DEPLOY_TICKET = "Deploy the new checkout service to production.";
+
+export const MIGRATION_TICKET =
+  "Add a database migration that drops the unused users_legacy table.";
+
 export const SAMPLE_TICKETS: SampleTicket[] = [
+  {
+    id: "google-login",
+    label: "Google social login",
+    expected: "Feature · High · authentication, backend, mobile, security",
+    ticket: GOOGLE_LOGIN_TICKET,
+    repository: "my-app",
+    branch: "feature/google-login",
+  },
   {
     id: "logout-auth",
     label: "Logout after upgrade",
@@ -35,13 +54,19 @@ export const SAMPLE_TICKETS: SampleTicket[] = [
   {
     id: "css-cleanup",
     label: "Unused CSS",
-    expected: "Low-risk cleanup · do not dispatch Architect + Security + Human",
+    expected: "Simple UI · Developer → Testing → PR Reviewer",
     ticket: "Please clean up unused CSS on the settings screen.",
+  },
+  {
+    id: "ui-button",
+    label: "Settings button color",
+    expected: "Simple UI · Developer → Testing → PR Reviewer",
+    ticket: UI_BUTTON_TICKET,
   },
   {
     id: "session-research",
     label: "How sessions work",
-    expected: "Research only · no PR · no Generate Fix",
+    expected: "Research only · no PR · no Developer Agent",
     ticket: "How does session refresh work in the mobile app?",
   },
   {
@@ -63,16 +88,36 @@ export const SAMPLE_TICKETS: SampleTicket[] = [
     ticket:
       "Pay down technical debt in the payment webhook handler. It is not idempotent and retries double-charge merchants.",
   },
+  {
+    id: "prod-deploy",
+    label: "Production deploy",
+    expected: "Plan approval → implement → ship approval → PR",
+    ticket: PRODUCTION_DEPLOY_TICKET,
+  },
+  {
+    id: "db-migration",
+    label: "Drop unused table",
+    expected: "Destructive migration · two human gates",
+    ticket: MIGRATION_TICKET,
+  },
 ];
 
 export function sampleById(id: string) {
   return SAMPLE_TICKETS.find((item) => item.id === id);
 }
 
+export function sampleToInput(sample: SampleTicket): TaskInput {
+  return {
+    task: sample.ticket,
+    repository: sample.repository,
+    branch: sample.branch,
+  };
+}
+
 export function runSample(id: string): OrchestrationRun {
   const sample = sampleById(id);
   if (!sample) throw new Error(`Unknown sample: ${id}`);
-  const run = executePlan(sample.ticket);
+  const run = executePlan(sampleToInput(sample));
   run.id = `sample-${id}`;
   return run;
 }

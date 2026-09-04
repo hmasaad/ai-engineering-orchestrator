@@ -4,46 +4,66 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AgentGraph } from "@/components/AgentGraph";
 import { AgentProgress } from "@/components/AgentProgress";
+import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
+import { ControlCard } from "@/components/ControlCard";
 import { PlanView } from "@/components/PlanView";
+import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
 import { describeStep, readSse } from "@/lib/client";
-import { classifyTicket } from "@/lib/classify";
+import { understandTask } from "@/lib/classify";
 import { buildPlan } from "@/lib/plan";
-import { LOGOUT_TICKET, SAMPLE_TICKETS } from "@/lib/samples";
+import { SAMPLE_TICKETS, sampleToInput } from "@/lib/samples";
+import { draftState } from "@/lib/state";
 import { saveRun } from "@/lib/storage";
-import type { AgentId, AgentStepEvent, OrchestrationRun } from "@/lib/types";
+import type { AgentId, AgentStepEvent, OrchestrationRun, SharedAgentState } from "@/lib/types";
 
 export default function HomePage() {
   const router = useRouter();
-  const [ticket, setTicket] = useState(LOGOUT_TICKET);
+  const [ticket, setTicket] = useState("Add social login with Google");
+  const [repository, setRepository] = useState("my-app");
+  const [branch, setBranch] = useState("feature/google-login");
   const [running, setRunning] = useState(false);
   const [current, setCurrent] = useState<AgentStepEvent | null>(null);
   const [completed, setCompleted] = useState<AgentId[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [liveState, setLiveState] = useState<SharedAgentState | null>(null);
 
-  const analysis = useMemo(() => classifyTicket(ticket), [ticket]);
+  const analysis = useMemo(
+    () => understandTask({ task: ticket, repository, branch }),
+    [ticket, repository, branch],
+  );
   const plan = useMemo(() => buildPlan(analysis), [analysis]);
+  const emptyState = useMemo(() => draftState(ticket), [ticket]);
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("sample");
     const sample = SAMPLE_TICKETS.find((item) => item.id === id);
-    if (sample) setTicket(sample.ticket);
+    if (sample) {
+      setTicket(sample.ticket);
+      setRepository(sample.repository ?? "");
+      setBranch(sample.branch ?? "");
+    }
   }, []);
+
+  useEffect(() => {
+    setLiveState(null);
+  }, [ticket, repository, branch]);
 
   async function run() {
     setError(null);
     setRunning(true);
     setCompleted([]);
     setCurrent(null);
+    setLiveState(null);
     setMessage("Orchestrator understanding the ticket…");
 
     try {
       const response = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket }),
+        body: JSON.stringify({ task: ticket, repository, branch }),
       });
       if (!response.ok && response.headers.get("content-type")?.includes("application/json")) {
         const payload = (await response.json()) as { error?: string };
@@ -57,13 +77,15 @@ export default function HomePage() {
           setCurrent(step);
           setMessage(describeStep(step));
         }
-        if (event === "artifact") {
+        if (event === "artifact" || event === "state") {
           const runData = data as OrchestrationRun;
           last = runData;
           setCompleted(runData.artifacts.map((item) => item.agent));
+          if (runData.state) setLiveState(runData.state);
         }
         if (event === "run") {
           last = data as OrchestrationRun;
+          if (last.state) setLiveState(last.state);
         }
         if (event === "error") {
           const payload = data as { message?: string };
@@ -94,32 +116,63 @@ export default function HomePage() {
             Don&apos;t ask one model to solve the ticket.
           </h1>
           <p className="mt-4 max-w-xl text-ink-soft">
-            The orchestrator reads the work, names the task type and risk, then builds an execution
-            plan across Bug Investigation, Research, Architect, Security, Tests, Evals, and PR
-            Review. High-risk work stops for a human.
+            The orchestrator starts with Task Understanding, then the Agent Router picks specialists.
+            Those specialists write to one shared state object. Humans approve the plan and the ship
+            — agents do not run autonomously. High-risk work stops twice.
           </p>
 
           <label className="mt-8 block">
             <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-soft">
-              Ticket
+              Task
             </span>
             <textarea
               value={ticket}
               onChange={(event) => setTicket(event.target.value)}
-              rows={8}
+              rows={5}
               className="mt-1 w-full rounded-2xl border border-rule bg-white/80 px-4 py-3 text-sm outline-none focus:border-navy"
-              placeholder='Example: "Users are getting logged out randomly after upgrading the app."'
+              placeholder='Example: "Add social login with Google"'
             />
           </label>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-soft">
+                Repository
+              </span>
+              <input
+                value={repository}
+                onChange={(event) => setRepository(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-rule bg-white/80 px-3 py-2 text-sm outline-none focus:border-navy"
+                placeholder="my-app"
+              />
+            </label>
+            <label>
+              <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-soft">
+                Branch
+              </span>
+              <input
+                value={branch}
+                onChange={(event) => setBranch(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-rule bg-white/80 px-3 py-2 font-mono text-sm outline-none focus:border-navy"
+                placeholder="feature/google-login"
+              />
+            </label>
+          </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
             {SAMPLE_TICKETS.map((sample) => (
               <button
                 key={sample.id}
                 type="button"
-                onClick={() => setTicket(sample.ticket)}
+                onClick={() => {
+                  const input = sampleToInput(sample);
+                  setTicket(input.task);
+                  setRepository(input.repository ?? "");
+                  setBranch(input.branch ?? "");
+                }}
                 className={`rounded-full border px-3 py-1 text-xs ${
-                  ticket === sample.ticket
+                  ticket === sample.ticket &&
+                  repository === (sample.repository ?? "") &&
+                  branch === (sample.branch ?? "")
                     ? "border-navy bg-navy text-paper"
                     : "border-rule text-ink-soft hover:border-navy hover:text-navy"
                 }`}
@@ -140,10 +193,14 @@ export default function HomePage() {
             </button>
             <button
               type="button"
-              onClick={() => setTicket(LOGOUT_TICKET)}
+              onClick={() => {
+                setTicket("Add social login with Google");
+                setRepository("my-app");
+                setBranch("feature/google-login");
+              }}
               className="rounded-full border border-rule px-5 py-2.5 text-sm text-ink-soft"
             >
-              Load logout bug
+              Load Google login
             </button>
           </div>
 
@@ -154,6 +211,9 @@ export default function HomePage() {
 
           <div className="mt-8 grid gap-4">
             <TaskAnalysisCard analysis={analysis} />
+            {analysis.route ? <AgentRouterCard route={analysis.route} /> : null}
+            <SharedStateCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <ControlCard control={plan.control} />
             <PlanView plan={plan} />
           </div>
         </div>
@@ -163,7 +223,7 @@ export default function HomePage() {
             Dispatch graph
           </p>
           <p className="mt-1 text-sm text-ink-soft">
-            The graph is the plan for this ticket, not a fixed pipeline.
+            The graph is the route for this ticket, not a fixed pipeline.
           </p>
           <div className="mt-6">
             <AgentGraph

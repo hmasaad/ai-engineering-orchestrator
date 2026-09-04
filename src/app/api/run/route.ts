@@ -1,6 +1,7 @@
+import { asTaskInput } from "@/lib/classify";
 import { executePlanAsync } from "@/lib/orchestrate";
 import { saveLatest } from "@/lib/store";
-import type { OrchestrationRun } from "@/lib/types";
+import type { OrchestrationRun, TaskInput } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -10,14 +11,23 @@ function sse(event: string, data: unknown) {
 }
 
 export async function POST(request: Request) {
-  let ticket = "";
+  let input: TaskInput;
   try {
-    const body = (await request.json()) as { ticket?: string };
-    ticket = body.ticket?.trim() ?? "";
+    const body = (await request.json()) as {
+      task?: string;
+      ticket?: string;
+      repository?: string;
+      branch?: string;
+    };
+    input = asTaskInput({
+      task: body.task ?? body.ticket ?? "",
+      repository: body.repository,
+      branch: body.branch,
+    });
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  if (!ticket) return Response.json({ error: "Ticket is required." }, { status: 400 });
+  if (!input.task.trim()) return Response.json({ error: "task is required." }, { status: 400 });
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -29,11 +39,12 @@ export async function POST(request: Request) {
       try {
         let last: OrchestrationRun | null = null;
         const run = await executePlanAsync(
-          ticket,
+          input,
           (event) => {
             if (event.type === "analysis") send("analysis", event.run);
             if (event.type === "step") send("step", event.step);
             if (event.type === "artifact") send("artifact", event.run);
+            if (event.type === "state") send("state", event.run);
             if (event.type === "run") {
               last = event.run;
               send("run", event.run);

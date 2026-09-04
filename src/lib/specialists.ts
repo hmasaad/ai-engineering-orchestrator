@@ -1,12 +1,18 @@
 import { evaluatePlan } from "./quality";
 import { AGENTS } from "./roster";
-import type { AgentId, Artifact, OrchestrationRun, PlanStep } from "./types";
+import { hasArea } from "./classify";
+import { isFilled, initSharedState } from "./state";
+import type { AgentId, Artifact, OrchestrationRun, PlanStep, SharedAgentState } from "./types";
 
 type Ctx = {
   ticket: string;
-  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts">;
+  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts" | "state">;
   step: PlanStep;
 };
+
+function stateOf(ctx: Ctx): SharedAgentState {
+  return ctx.run.state ?? initSharedState(ctx.ticket);
+}
 
 function section(heading: string, bullets: string[]) {
   return { heading, bullets };
@@ -17,7 +23,11 @@ function prior(ctx: Ctx, agent: AgentId) {
 }
 
 function authBug(ctx: Ctx) {
-  return ctx.run.analysis.area === "Authentication" && ctx.run.analysis.taskType === "bug";
+  return hasArea(ctx.run.analysis, "authentication") && ctx.run.analysis.taskType === "bug";
+}
+
+function identityFeature(ctx: Ctx) {
+  return hasArea(ctx.run.analysis, "authentication") && ctx.run.analysis.taskType === "feature";
 }
 
 function bugArtifact(ctx: Ctx): Artifact {
@@ -48,7 +58,7 @@ function bugArtifact(ctx: Ctx): Artifact {
         {
           severity: "blocker",
           title: "Auth session is in play",
-          detail: "Any patch that touches tokens needs Security Review before Generate Fix.",
+          detail: "Any patch that touches tokens needs Security Review before the Developer Agent.",
         },
       ],
       recommendation: "Send Code Research at token storage, refresh, and upgrade migration next.",
@@ -157,7 +167,50 @@ function researchArtifact(ctx: Ctx): Artifact {
       ]),
     ],
     findings: [],
-    recommendation: "Pass evidence forward. Do not skip to Generate Fix.",
+    recommendation: "Pass evidence forward. Do not skip to the Developer Agent.",
+  };
+}
+
+function requirementsArtifact(ctx: Ctx): Artifact {
+  if (identityFeature(ctx)) {
+    return {
+      agent: "requirements",
+      title: "Google social login requirements",
+      summary:
+        "Users can sign in with Google without replacing the existing session model. Architect and Security still run before Developer.",
+      sections: [
+        section("In scope", [
+          "Mobile client can start Google Sign-In and receive an app session.",
+          "Backend verifies the Google token and links `sub` to the existing user.",
+          "Existing email/password users can link Google later.",
+        ]),
+        section("Out of scope", [
+          "A second user directory keyed only on Google email.",
+          "Skipping Security Review because 'it is just OAuth'.",
+        ]),
+        section("Success", [
+          "A new user can sign in with Google and stay signed in across an app restart.",
+          "An existing user who links Google keeps the same account.",
+        ]),
+      ],
+      findings: [],
+      recommendation: "Hand requirements to the Architect Agent. Do not code yet.",
+    };
+  }
+
+  return {
+    agent: "requirements",
+    title: `${ctx.run.analysis.area} requirements`,
+    summary: "Lock what the feature must do before Architect or Developer start.",
+    sections: [
+      section("In scope", [ctx.ticket.trim()]),
+      section("Constraints", [
+        `Stay inside ${ctx.run.analysis.area}.`,
+        "Do not expand into a rewrite.",
+      ]),
+    ],
+    findings: [],
+    recommendation: "Architect shapes the change against these requirements.",
   };
 }
 
@@ -206,16 +259,52 @@ function rcaArtifact(ctx: Ctx): Artifact {
       ]),
     ],
     findings: [],
-    recommendation: "If security is next, wait. If not, Generate Fix against this cause only.",
+    recommendation: "If security is next, wait. If not, the Developer Agent works against this cause only.",
   };
 }
 
 function architectArtifact(ctx: Ctx): Artifact {
+  const requirements = stateOf(ctx).requirements;
+  const fromRequirements = isFilled(requirements)
+    ? section(
+        "From shared state",
+        "in_scope" in requirements
+          ? requirements.in_scope.length > 0
+            ? requirements.in_scope
+            : [requirements.summary]
+          : [JSON.stringify(requirements)],
+      )
+    : null;
+
+  if (identityFeature(ctx)) {
+    return {
+      agent: "architect",
+      title: "Google identity as an auth provider, not a new user system",
+      summary:
+        "Social login sits beside existing sessions. Keep identity in the auth module; the backend exchanges the Google token; the mobile client only hosts the SDK.",
+      sections: [
+        ...(fromRequirements ? [fromRequirements] : []),
+        section("Boundaries", [
+          "Mobile: Google Sign-In SDK, no tokens in logs, no custom WebView login.",
+          "Backend: authorization-code or ID-token verify, then issue the app session.",
+          "Do not create a parallel user table keyed only on Google email.",
+        ]),
+        section("Data", [
+          "Link Google `sub` to the existing user record.",
+          "Keep refresh/session tokens in the store you already trust.",
+        ]),
+      ],
+      findings: [],
+      recommendation: "Security Review must cover account linking and token storage before the Developer Agent.",
+    };
+  }
+
   return {
     agent: "architect",
     title: `${ctx.run.analysis.area} change shape`,
     summary: "Design the smallest change that fits the existing system. Do not start with a rewrite.",
     sections: [
+      ...(fromRequirements ? [fromRequirements] : []),
       section("Boundaries", [
         `Keep ${ctx.run.analysis.area} ownership in the module that already owns it.`,
         "Do not introduce a new service for a local contract fix.",
@@ -250,12 +339,23 @@ function debtArtifact(ctx: Ctx): Artifact {
 }
 
 function securityArtifact(ctx: Ctx): Artifact {
+  const architecture = stateOf(ctx).architecture;
+  const fromArchitecture = isFilled(architecture)
+    ? section(
+        "From shared state",
+        "boundaries" in architecture
+          ? architecture.boundaries
+          : [architecture.summary ?? "Architecture is in shared state."],
+      )
+    : null;
+
   if (authBug(ctx)) {
     return {
       agent: "security",
       title: "Session migration without weakening reuse checks",
       summary: "The fix must migrate old refresh tokens once, not disable reuse detection or log tokens.",
       sections: [
+        ...(fromArchitecture ? [fromArchitecture] : []),
         section("Threats", [
           "Stolen refresh token replay — reuse detection stays on.",
           "Session fixation across upgrade — new family after a successful one-time migrate.",
@@ -274,7 +374,37 @@ function securityArtifact(ctx: Ctx): Artifact {
           detail: "Swallowing 401s would hide theft and leave stale sessions on device.",
         },
       ],
-      recommendation: "Generate Fix may proceed only with a migration, not a bypass.",
+      recommendation: "The Developer Agent may proceed only with a migration, not a bypass.",
+    };
+  }
+
+  if (identityFeature(ctx)) {
+    return {
+      agent: "security",
+      title: "OAuth account linking without session theft",
+      summary:
+        "Google Sign-In is high risk: a bad link step can attach an attacker’s Google account to a victim, or leak ID tokens on device.",
+      sections: [
+        ...(fromArchitecture ? [fromArchitecture] : []),
+        section("Threats", [
+          "Account linking without proving control of the existing session.",
+          "ID token accepted without verifying aud/iss/expiry.",
+          "Access tokens written to crash logs or shared preferences.",
+        ]),
+        section("Required controls", [
+          "Verify Google tokens on the backend, never trust the client.",
+          "Link only when the user is already authenticated, or create a new user from `sub`.",
+          "Keep reuse detection and secure storage for the app session you issue after Google.",
+        ]),
+      ],
+      findings: [
+        {
+          severity: "blocker",
+          title: "No client-only trust of Google",
+          detail: "The mobile SDK is not the source of truth. The backend must verify the token.",
+        },
+      ],
+      recommendation: "The Developer Agent may proceed only with server-side verification.",
     };
   }
 
@@ -283,6 +413,7 @@ function securityArtifact(ctx: Ctx): Artifact {
     title: `${ctx.run.analysis.area} threat review`,
     summary: "Review the change for abuse cases before a patch is written.",
     sections: [
+      ...(fromArchitecture ? [fromArchitecture] : []),
       section("Look at", [
         "Authn/authz on the new path.",
         "Injection, secrets, and sensitive logs.",
@@ -290,11 +421,21 @@ function securityArtifact(ctx: Ctx): Artifact {
       ]),
     ],
     findings: [],
-    recommendation: "Block Generate Fix if a control would be removed to make the bug disappear.",
+    recommendation: "Block the Developer Agent if a control would be removed to make the bug disappear.",
   };
 }
 
 function implementArtifact(ctx: Ctx): Artifact {
+  const shared = stateOf(ctx);
+  const findings = shared.security_findings;
+  const architecture = shared.architecture;
+  const fromState = [
+    isFilled(architecture) && "summary" in architecture
+      ? `Architecture: ${architecture.summary}`
+      : null,
+    ...findings.map((item) => `Security (${item.severity}): ${item.title}`),
+  ].filter((item): item is string => Boolean(item));
+
   const rca = prior(ctx, "rca");
   if (authBug(ctx)) {
     return {
@@ -303,6 +444,7 @@ function implementArtifact(ctx: Ctx): Artifact {
       summary:
         "Accept the previous refresh token once on first launch after upgrade, rotate to the new family, keep reuse detection on.",
       sections: [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
         section("Change", [
           "Migration hook: if stored token is v1 and server returns reuse_detected on v2 parse, retry once with a migrate endpoint.",
           "On success, store v2 and drop v1.",
@@ -318,11 +460,31 @@ function implementArtifact(ctx: Ctx): Artifact {
     };
   }
 
+  if (identityFeature(ctx)) {
+    return {
+      agent: "implement",
+      title: "Google Sign-In beside the existing session",
+      summary:
+        "Add Google as a provider in the auth module. Backend verifies the token. Mobile only hosts the SDK.",
+      sections: [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
+        section("Change", [
+          "Mobile: Google Sign-In SDK, then exchange the token with the backend.",
+          "Backend: verify aud/iss/expiry, link `sub`, issue the app session.",
+          "Do not trust the client as the source of truth.",
+        ]),
+      ],
+      findings: [],
+      recommendation: "Tests must cover account linking and a forged ID token.",
+    };
+  }
+
   return {
     agent: "implement",
     title: `Scoped ${ctx.run.analysis.area} change`,
     summary: "A patch against the locked cause, not a rewrite.",
     sections: [
+      ...(fromState.length ? [section("From shared state", fromState)] : []),
       section("Change", [
         ctx.ticket.trim(),
         "Keep the diff inside the owning module.",
@@ -334,12 +496,20 @@ function implementArtifact(ctx: Ctx): Artifact {
 }
 
 function testsArtifact(ctx: Ctx): Artifact {
+  const files = stateOf(ctx).files_changed;
+  const findings = stateOf(ctx).security_findings;
+  const fromState = [
+    ...files.map((file) => `Cover ${file}`),
+    ...findings.map((item) => `Do not green a fix that ignores: ${item.title}`),
+  ];
+
   if (authBug(ctx)) {
     return {
       agent: "tests",
       title: "Upgrade session regressions",
       summary: "Cover the upgrade migrate path and the real theft path so one test cannot green both.",
       sections: [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
         section("Must pass", [
           "v1 session survives upgrade to v2 via one-time migrate, user stays logged in.",
           "A replayed refresh token after rotation is rejected and the family is revoked.",
@@ -359,6 +529,7 @@ function testsArtifact(ctx: Ctx): Artifact {
     title: `${ctx.run.analysis.area} regressions`,
     summary: "Reproduce the ticket, then assert the fix.",
     sections: [
+      ...(fromState.length ? [section("From shared state", fromState)] : []),
       section("Cases", [
         "Happy path for the reported behavior.",
         "The failure mode in the ticket.",
@@ -420,13 +591,23 @@ function prArtifact(ctx: Ctx): Artifact {
 }
 
 function reviewArtifact(ctx: Ctx): Artifact {
+  const shared = stateOf(ctx);
+  const fromState = [
+    ...shared.files_changed.map((file) => `Diff includes ${file}`),
+    ...shared.tests.slice(0, 3).map((item) => `Test: ${item}`),
+    ...shared.security_findings.map((item) => `Open security item: ${item.title}`),
+  ];
+
   return {
     agent: "pr_review",
     title: "Review of the proposed PR",
     summary: "The orchestrator does not approve its own PR. A reviewer agent looks at evidence.",
     sections: [
+      ...(fromState.length ? [section("From shared state", fromState)] : []),
       section("Lenses", [
-        ctx.run.analysis.area === "Authentication" ? "Auth session and token handling." : `Focus on ${ctx.run.analysis.area}.`,
+        ctx.run.analysis.area === "Authentication" || hasArea(ctx.run.analysis, "authentication")
+          ? "Auth session and token handling."
+          : `Focus on ${ctx.run.analysis.area}.`,
         "Tests cover the reported failure.",
         "No secrets in the diff.",
       ]),
@@ -447,26 +628,43 @@ function reviewArtifact(ctx: Ctx): Artifact {
 }
 
 function approvalArtifact(ctx: Ctx): Artifact {
+  const gate = ctx.step.gate;
   return {
     agent: "approval",
-    title: "Waiting for a human",
-    summary: ctx.run.plan.approvalReason,
+    title: gate === "plan" ? "Plan approval" : gate === "ship" ? "Ship approval" : "Waiting for a human",
+    summary:
+      ctx.run.plan.control?.gates.find((item) => item.id === gate)?.reason ??
+      ctx.run.plan.approvalReason,
     sections: [
       section("What to check", [
         ctx.run.analysis.vague
           ? "Is this even a change request?"
-          : "Does the locked cause match production?",
-        "Did Security Review run before Generate Fix?",
-        "Did Evals pass before Create PR?",
+          : gate === "plan"
+            ? "Is this the right change, and may Developer start?"
+            : "Did tests and Security land in shared state, and may a PR be opened?",
+        "Did Security Review run before the Developer Agent?",
+        "The orchestrator will not merge.",
+      ]),
+      section("Especially gated", [
+        "Production deployments",
+        "Database migrations",
+        "Destructive operations",
+        "Security-sensitive changes",
+        "Dependency upgrades",
+        "Infrastructure changes",
       ]),
       section("Orchestrator will not", ["Merge.", "Deploy.", "Bypass this gate because a model is confident."]),
     ],
     findings: [],
-    recommendation: "Approve to mark the run complete, or reject with a note.",
+    recommendation:
+      gate === "plan"
+        ? "Approve to let Implementation start, or reject the plan."
+        : "Approve to open a PR, or reject. Nothing merges itself.",
   };
 }
 
 const BUILDERS: Record<AgentId, (ctx: Ctx) => Artifact> = {
+  requirements: requirementsArtifact,
   bug: bugArtifact,
   research: researchArtifact,
   rca: rcaArtifact,

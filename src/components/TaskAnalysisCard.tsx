@@ -1,4 +1,3 @@
-import { AGENTS } from "@/lib/roster";
 import type { TaskAnalysis } from "@/lib/types";
 
 const RISK_TONE: Record<string, string> = {
@@ -9,14 +8,20 @@ const RISK_TONE: Record<string, string> = {
 };
 
 export function TaskAnalysisCard({ analysis }: { analysis: TaskAnalysis }) {
+  const json = analysis.understanding ?? {
+    type: analysis.taskType,
+    risk: analysis.risk,
+    areas: analysis.areas ?? [],
+  };
+
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        Understand the task
+        1. Task understanding
       </p>
       <dl className="mt-4 grid gap-3 sm:grid-cols-2">
         <div>
-          <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-soft">Task type</dt>
+          <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-soft">Type</dt>
           <dd className="font-serif text-2xl text-navy">{analysis.taskTypeLabel}</dd>
         </div>
         <div>
@@ -25,18 +30,24 @@ export function TaskAnalysisCard({ analysis }: { analysis: TaskAnalysis }) {
             {analysis.risk.charAt(0).toUpperCase() + analysis.risk.slice(1)}
           </dd>
         </div>
-        <div>
-          <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-soft">Affected area</dt>
-          <dd className="text-lg text-navy">{analysis.area}</dd>
-        </div>
-        <div>
-          <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-soft">Required agents</dt>
-          <dd className="text-sm text-ink">
-            {analysis.requiredAgents.map((id) => AGENTS[id].short).join(" · ")}
+        <div className="sm:col-span-2">
+          <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-soft">Areas</dt>
+          <dd className="mt-1 flex flex-wrap gap-1.5">
+            {(json.areas ?? []).map((id) => (
+              <span
+                key={id}
+                className="rounded-full border border-rule bg-paper px-2.5 py-0.5 font-mono text-[11px] text-navy"
+              >
+                {id}
+              </span>
+            ))}
           </dd>
         </div>
       </dl>
       <p className="mt-4 text-sm text-ink-soft">{analysis.summary}</p>
+      <pre className="mt-4 overflow-x-auto rounded-xl border border-rule bg-navy-2/5 p-3 font-mono text-[11px] leading-5 text-navy">
+        {JSON.stringify(json, null, 2)}
+      </pre>
       {analysis.missing.length > 0 && (
         <ul className="mt-4 space-y-2 border-t border-rule pt-4">
           {analysis.missing.map((item) => (

@@ -1,4 +1,4 @@
-import type { AgentId, ExecutionPlan, TaskAnalysis } from "../types";
+import type { AgentId, ExecutionPlan, SharedAgentState, TaskAnalysis } from "../types";
 import { AGENTS } from "../roster";
 import { evaluatePlan } from "../quality";
 import { comesBefore, hasAgent } from "../plan";
@@ -19,6 +19,7 @@ export type ScoreContext = {
   analysis: TaskAnalysis;
   plan: ExecutionPlan;
   hay: string;
+  state?: SharedAgentState;
 };
 
 export type ScenarioAssertion = {

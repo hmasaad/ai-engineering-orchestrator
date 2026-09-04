@@ -61,7 +61,7 @@ export function AgentGraph({
     <div className="flex flex-col items-center">
       <Node
         title="AI Engineering Orchestrator"
-        sub="Understand · plan · dispatch"
+        sub="Understand · route · dispatch"
         kind={running && !current ? "current" : running || done.size > 0 ? "done" : "idle"}
         agent="research"
       />

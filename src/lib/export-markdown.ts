@@ -25,10 +25,24 @@ export function runToMarkdown(run: OrchestrationRun) {
 
 - Task type: ${run.analysis.taskTypeLabel}
 - Risk: ${run.analysis.risk}
-- Affected area: ${run.analysis.area}
-- Required agents: ${run.analysis.requiredAgents.map((id) => AGENTS[id].label).join(", ")}
+- Affected areas: ${run.analysis.areas.join(", ")}
+- Repository: ${run.input.repository ?? "—"}
+- Branch: ${run.input.branch ?? "—"}
 
 ${run.analysis.summary}
+
+## Route
+
+- Pattern: ${run.analysis.route?.pattern ?? "—"}
+- Agents: ${run.analysis.route?.routing.agents.join(" → ") ?? run.analysis.requiredAgents.map((id) => AGENTS[id].label).join(" → ")}
+
+The router picks specialists for this ticket. It is not a fixed pipeline.
+
+## Shared state
+
+${"```json\n" + JSON.stringify(run.state ?? {}, null, 2) + "\n```"}
+
+Agents read and write this blackboard. Empty objects mean that specialist has not run.
 
 ## Execution plan
 

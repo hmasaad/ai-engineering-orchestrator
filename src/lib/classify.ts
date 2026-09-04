@@ -1,5 +1,15 @@
 import { TASK_TYPE_LABEL } from "./roster";
-import type { AgentId, MissingQuestion, Risk, TaskAnalysis, TaskType } from "./types";
+import { bumpRiskForControl, detectControlKinds } from "./control";
+import { routeTask } from "./router";
+import type {
+  AreaId,
+  MissingQuestion,
+  Risk,
+  TaskAnalysis,
+  TaskInput,
+  TaskType,
+  TaskUnderstanding,
+} from "./types";
 
 const BUG_HINTS = [
   "bug",
@@ -137,6 +147,32 @@ const CHANGE_HINTS = [
   "customers are",
 ];
 
+const SOCIAL_HINTS = [
+  "social login",
+  "social auth",
+  "google login",
+  "google sign",
+  "sign in with google",
+  "signin with google",
+  "oauth",
+  "openid",
+  "sso",
+];
+
+const BACKEND_HINTS = [
+  "backend",
+  "api",
+  "endpoint",
+  "server",
+  "webhook",
+  "handler",
+  "service",
+];
+
+const MOBILE_HINTS = ["mobile", "ios", "android", "flutter", "react native"];
+
+const FRONTEND_HINTS = ["frontend", "web", "browser", "next.js", "react"];
+
 const AUTH_HINTS = [
   "auth",
   "login",
@@ -152,6 +188,7 @@ const AUTH_HINTS = [
   "refresh token",
   "sign in",
   "signin",
+  "google",
 ];
 
 const PAYMENT_HINTS = [
@@ -218,15 +255,129 @@ function any(text: string, needles: string[]) {
   return hits(text, needles).length > 0;
 }
 
+export const AREA_LABEL: Record<AreaId, string> = {
+  authentication: "Authentication",
+  backend: "Backend",
+  mobile: "Mobile",
+  frontend: "Frontend",
+  security: "Security",
+  payments: "Payments",
+  privacy: "PII / Privacy",
+  booking: "Booking",
+  ui: "UI",
+  documentation: "Documentation",
+  platform: "Platform",
+  application: "Application",
+};
+
+const AREA_ORDER: AreaId[] = [
+  "authentication",
+  "backend",
+  "mobile",
+  "frontend",
+  "security",
+  "payments",
+  "privacy",
+  "booking",
+  "ui",
+  "documentation",
+  "platform",
+  "application",
+];
+
+const HIGH_RISK_AREAS: AreaId[] = ["authentication", "payments", "privacy", "security"];
+
+export function asTaskInput(input: TaskInput | string): TaskInput {
+  if (typeof input === "string") return { task: input };
+  return {
+    task: input.task ?? "",
+    repository: input.repository?.trim() || undefined,
+    branch: input.branch?.trim() || undefined,
+  };
+}
+
+export function corpusOf(input: TaskInput) {
+  return [input.task, input.repository, input.branch].filter(Boolean).join(" ");
+}
+
+export function hasArea(analysis: Pick<TaskAnalysis, "areas">, id: AreaId) {
+  return analysis.areas.includes(id);
+}
+
+export function toUnderstanding(analysis: TaskAnalysis): TaskUnderstanding {
+  return {
+    type: analysis.taskType,
+    risk: analysis.risk,
+    areas: analysis.areas,
+  };
+}
+
+function sortAreas(areas: Iterable<AreaId>): AreaId[] {
+  const set = new Set(areas);
+  return AREA_ORDER.filter((id) => set.has(id));
+}
+
+function repoLooksLikeApp(repository?: string) {
+  if (!repository) return false;
+  return /(^|[-_/])app(s)?($|[-_/])/i.test(repository) || /\bapp\b/i.test(repository.replace(/[-_]/g, " "));
+}
+
+function branchType(branch?: string): TaskType | null {
+  if (!branch) return null;
+  const b = branch.toLowerCase();
+  if (b.startsWith("feature/") || b.startsWith("feat/")) return "feature";
+  if (b.startsWith("fix/") || b.startsWith("bugfix/") || b.startsWith("hotfix/")) return "bug";
+  if (b.startsWith("security/")) return "security";
+  if (b.startsWith("chore/") || b.startsWith("refactor/")) return "refactor";
+  if (b.startsWith("docs/")) return "research";
+  return null;
+}
+
+export function detectAreas(input: TaskInput | string): AreaId[] {
+  const parsed = asTaskInput(input);
+  const corpus = corpusOf(parsed);
+  const found = new Set<AreaId>();
+
+  const identity =
+    any(corpus, SOCIAL_HINTS) ||
+    (any(corpus, AUTH_HINTS) && any(corpus, ["google", "oauth", "sso"])) ||
+    any(parsed.task, AUTH_HINTS);
+
+  if (identity) found.add("authentication");
+  if (any(corpus, PAYMENT_HINTS)) found.add("payments");
+  if (any(corpus, PII_HINTS)) found.add("privacy");
+  if (any(corpus, BOOKING_HINTS)) found.add("booking");
+  if (any(corpus, DOCS_HINTS) && !any(corpus, BUG_HINTS)) found.add("documentation");
+  if (any(corpus, UI_HINTS) && !identity) found.add("ui");
+  if (any(corpus, ARCH_HINTS)) found.add("platform");
+  if (any(corpus, SECURITY_HINTS) || identity || found.has("payments") || found.has("privacy")) {
+    found.add("security");
+  }
+  if (
+    any(corpus, BACKEND_HINTS) ||
+    identity ||
+    found.has("payments") ||
+    any(corpus, SOCIAL_HINTS)
+  ) {
+    found.add("backend");
+  }
+
+  const mobile =
+    any(corpus, MOBILE_HINTS) ||
+    ((identity || any(corpus, SOCIAL_HINTS)) && repoLooksLikeApp(parsed.repository));
+  const frontend = any(corpus, FRONTEND_HINTS);
+
+  if (mobile) found.add("mobile");
+  else if (frontend) found.add("frontend");
+  else if (any(corpus, SOCIAL_HINTS) && !mobile) found.add("frontend");
+
+  if (found.size === 0) found.add("application");
+  return sortAreas(found);
+}
+
 export function detectArea(ticket: string): string {
-  if (any(ticket, AUTH_HINTS)) return "Authentication";
-  if (any(ticket, PAYMENT_HINTS)) return "Payments";
-  if (any(ticket, PII_HINTS)) return "PII / Privacy";
-  if (any(ticket, BOOKING_HINTS)) return "Booking";
-  if (any(ticket, DOCS_HINTS) && !any(ticket, BUG_HINTS)) return "Documentation";
-  if (any(ticket, UI_HINTS)) return "UI";
-  if (any(ticket, ARCH_HINTS)) return "Platform";
-  return "Application";
+  const areas = detectAreas(ticket);
+  return AREA_LABEL[areas[0] ?? "application"];
 }
 
 export function isVague(ticket: string): boolean {
@@ -248,7 +399,7 @@ export function isVague(ticket: string): boolean {
   return false;
 }
 
-function detectType(ticket: string, vague: boolean): TaskType {
+function detectType(ticket: string, vague: boolean, branch?: string): TaskType {
   if (vague) return "research";
   if (any(ticket, INCIDENT_HINTS)) return "incident";
   if (any(ticket, SECURITY_HINTS)) return "security";
@@ -263,23 +414,26 @@ function detectType(ticket: string, vague: boolean): TaskType {
   if (any(ticket, BUG_HINTS)) return "bug";
   if (any(ticket, FEATURE_HINTS)) return "feature";
   if (any(ticket, DEBT_HINTS)) return "tech_debt";
+  const fromBranch = branchType(branch);
+  if (fromBranch) return fromBranch;
   return "feature";
 }
 
-function detectRisk(ticket: string, taskType: TaskType, area: string, vague: boolean): Risk {
+function detectRisk(
+  ticket: string,
+  taskType: TaskType,
+  areas: AreaId[],
+  vague: boolean,
+): Risk {
   if (any(ticket, CRITICAL_HINTS) || taskType === "incident") return "critical";
   if (vague && taskType === "research") return "low";
-  if (
-    area === "Authentication" ||
-    area === "Payments" ||
-    area === "PII / Privacy" ||
-    taskType === "security"
-  ) {
+  const sensitive = areas.some((id) => HIGH_RISK_AREAS.includes(id));
+  if (sensitive || taskType === "security") {
     if (taskType === "research") return "medium";
     return "high";
   }
   if (taskType === "architecture") return "medium";
-  if (area === "Documentation" || area === "UI") {
+  if (areas.every((id) => id === "ui" || id === "documentation" || id === "frontend") && areas.length > 0) {
     if (taskType === "bug") return "medium";
     return "low";
   }
@@ -304,7 +458,7 @@ function asksForChange(ticket: string, taskType: TaskType, vague: boolean) {
   return any(ticket, CHANGE_HINTS);
 }
 
-function missingQuestions(ticket: string, vague: boolean, area: string): MissingQuestion[] {
+function missingQuestions(ticket: string, vague: boolean, areas: AreaId[]): MissingQuestion[] {
   if (!vague) return [];
   const questions: MissingQuestion[] = [
     {
@@ -316,92 +470,76 @@ function missingQuestions(ticket: string, vague: boolean, area: string): Missing
       whyItMatters: "Task type decides which specialists run. Guessing here is how you skip security or skip research.",
     },
   ];
-  if (area === "Application") {
+  if (areas.length === 0 || (areas.length === 1 && areas[0] === "application")) {
     questions.push({
       question: "Which product area is involved (auth, payments, booking, UI)?",
-      whyItMatters: "Area drives risk and whether Security Review is required.",
+      whyItMatters: "Areas drive risk and whether Security Review is required.",
     });
   }
   return questions;
 }
 
-function requiredAgents(taskType: TaskType, risk: Risk, area: string, change: boolean, vague: boolean): AgentId[] {
-  if (vague) return ["research", "approval"];
-  if (taskType === "research") return ["research"];
-  if (taskType === "architecture") return ["research", "architect", "security"];
-
-  const securityNeeded =
-    taskType === "security" ||
-    taskType === "incident" ||
-    risk === "high" ||
-    risk === "critical" ||
-    area === "Authentication" ||
-    area === "Payments" ||
-    area === "PII / Privacy";
-
-  if (taskType === "incident" || taskType === "bug") {
-    const agents: AgentId[] = ["bug", "research", "rca"];
-    if (securityNeeded) agents.push("security");
-    if (change) agents.push("implement", "tests", "evals", "pr", "pr_review");
-    if (risk === "high" || risk === "critical" || securityNeeded) agents.push("approval");
-    return agents;
-  }
-
-  if (taskType === "security") {
-    const agents: AgentId[] = ["research", "security"];
-    if (change) agents.push("implement", "tests", "evals", "pr", "pr_review");
-    agents.push("approval");
-    return agents;
-  }
-
-  if (taskType === "tech_debt" || taskType === "refactor") {
-    const agents: AgentId[] = ["tech_debt", "research"];
-    if (risk !== "low") agents.push("architect");
-    if (securityNeeded) agents.push("security");
-    if (change) agents.push("implement", "tests", "evals", "pr", "pr_review");
-    if (risk === "high" || risk === "critical" || securityNeeded) agents.push("approval");
-    return agents;
-  }
-
-  const agents: AgentId[] = ["research", "architect"];
-  if (securityNeeded || risk !== "low") agents.push("security");
-  if (change) agents.push("implement", "tests", "evals", "pr", "pr_review");
-  if (risk === "high" || risk === "critical" || securityNeeded) agents.push("approval");
-  return agents;
-}
-
-export function classifyTicket(ticket: string): TaskAnalysis {
-  const text = ticket.trim();
+export function understandTask(input: TaskInput | string): TaskAnalysis {
+  const parsed = asTaskInput(input);
+  const text = parsed.task.trim();
   const vague = isVague(text);
-  const area = detectArea(text);
-  const taskType = detectType(text, vague);
-  const risk = detectRisk(text, taskType, area, vague);
+  const areas = detectAreas(parsed);
+  const area = AREA_LABEL[areas[0] ?? "application"];
+  let taskType = detectType(text, vague, parsed.branch);
+  if (!vague && taskType === "research" && branchType(parsed.branch) === "feature") {
+    taskType = "feature";
+  }
+  let risk = detectRisk(text, taskType, areas, vague);
+  const controlKinds = detectControlKinds(text, { taskType, risk, areas, vague });
+  risk = bumpRiskForControl(risk, controlKinds);
   const change = asksForChange(text, taskType, vague);
-  const agents = requiredAgents(taskType, risk, area, change, vague);
+  const route = routeTask({ taskType, risk, areas, vague, asksForChange: change });
+  const corpus = corpusOf(parsed);
   const signals = [
-    ...hits(text, INCIDENT_HINTS).map((s) => `incident:${s.trim()}`),
-    ...hits(text, SECURITY_HINTS).map((s) => `security:${s.trim()}`),
-    ...hits(text, BUG_HINTS).map((s) => `bug:${s.trim()}`),
-    ...hits(text, AUTH_HINTS).map((s) => `area:${s.trim()}`),
-    ...hits(text, RESEARCH_HINTS).map((s) => `research:${s.trim()}`),
-    ...hits(text, DEBT_HINTS).map((s) => `debt:${s.trim()}`),
-    ...hits(text, ARCH_HINTS).map((s) => `arch:${s.trim()}`),
-  ].slice(0, 8);
+    ...hits(corpus, INCIDENT_HINTS).map((s) => `incident:${s.trim()}`),
+    ...hits(corpus, SECURITY_HINTS).map((s) => `security:${s.trim()}`),
+    ...hits(corpus, BUG_HINTS).map((s) => `bug:${s.trim()}`),
+    ...hits(corpus, AUTH_HINTS).map((s) => `area:${s.trim()}`),
+    ...hits(corpus, SOCIAL_HINTS).map((s) => `identity:${s.trim()}`),
+    ...hits(corpus, RESEARCH_HINTS).map((s) => `research:${s.trim()}`),
+    ...hits(corpus, DEBT_HINTS).map((s) => `debt:${s.trim()}`),
+    ...hits(corpus, ARCH_HINTS).map((s) => `arch:${s.trim()}`),
+    ...(parsed.branch ? [`branch:${parsed.branch}`] : []),
+    ...(parsed.repository ? [`repo:${parsed.repository}`] : []),
+  ].slice(0, 10);
 
   const summary = vague
     ? "Ticket is too thin to dispatch a ship plan. Research the question, then a human decides."
-    : `${TASK_TYPE_LABEL[taskType]} in ${area}, ${risk} risk. Dispatch specialists instead of one model.`;
+    : `${TASK_TYPE_LABEL[taskType]} in ${areas.map((id) => AREA_LABEL[id]).join(", ")}, ${risk} risk. Dispatch specialists instead of one model.`;
 
-  return {
+  const analysis: TaskAnalysis = {
+    input: parsed,
     taskType,
     taskTypeLabel: TASK_TYPE_LABEL[taskType],
     risk,
+    areas,
     area,
+    understanding: { type: taskType, risk, areas },
+    route,
     summary,
-    requiredAgents: agents,
+    requiredAgents: route.agents,
     signals,
     asksForChange: change,
     vague,
-    missing: missingQuestions(text, vague, area),
+    missing: missingQuestions(text, vague, areas),
+    controlKinds,
   };
+  return analysis;
+}
+
+export function understand(input: TaskInput | string): TaskUnderstanding {
+  return toUnderstanding(understandTask(input));
+}
+
+export function route(input: TaskInput | string) {
+  return understandTask(input).route.routing;
+}
+
+export function classifyTicket(ticket: string, extra?: Omit<TaskInput, "task">): TaskAnalysis {
+  return understandTask({ task: ticket, ...extra });
 }

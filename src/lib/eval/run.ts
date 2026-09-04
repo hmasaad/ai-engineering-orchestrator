@@ -1,8 +1,8 @@
-import { classifyTicket } from "../classify";
+import { classifyTicket, understandTask } from "../classify";
 import { buildPlan } from "../plan";
-import { evaluatePlan } from "../quality";
+import { evaluatePlan, evaluateRun } from "../quality";
 import { executePlan } from "../orchestrate";
-import { SAMPLE_TICKETS } from "../samples";
+import { SAMPLE_TICKETS, sampleToInput } from "../samples";
 import { attacksFor, planFromAgents } from "./attacks";
 import { EVAL_SCENARIOS, contextFor, type EvalScenario } from "./scenarios";
 import { scoreAssertions, type ScenarioScore } from "./rubric";
@@ -41,9 +41,20 @@ export type Suite = {
 };
 
 function goldCase(scenario: EvalScenario): CaseResult {
-  const ctx = contextFor(scenario.ticket);
+  const run = executePlan({
+    task: scenario.ticket,
+    repository: scenario.repository,
+    branch: scenario.branch,
+  });
+  const ctx = {
+    ticket: scenario.ticket,
+    analysis: run.analysis,
+    plan: run.plan,
+    state: run.state,
+    hay: scenario.ticket.toLowerCase(),
+  };
   const score = scoreAssertions(scenario.id, scenario.assertions, ctx);
-  const gate = evaluatePlan(ctx.analysis, ctx.plan, ctx.ticket);
+  const gate = evaluateRun(run);
   const failed = score.assertions.filter((item) => !item.pass);
   return {
     kind: "gold",
@@ -54,7 +65,11 @@ function goldCase(scenario: EvalScenario): CaseResult {
 }
 
 function attackCases(scenario: EvalScenario): CaseResult[] {
-  const analysis = classifyTicket(scenario.ticket);
+  const analysis = understandTask({
+    task: scenario.ticket,
+    repository: scenario.repository,
+    branch: scenario.branch,
+  });
   return attacksFor(scenario).map((attack) => {
     const plan = planFromAgents(analysis, attack.agents, attack.human);
     const ctx = { ticket: scenario.ticket, analysis, plan, hay: scenario.ticket.toLowerCase() };
@@ -100,7 +115,7 @@ export function runScenarioSuite() {
 
 export function runSampleSuite() {
   return SAMPLE_TICKETS.map((sample) => {
-    const run = executePlan(sample.ticket);
+    const run = executePlan(sampleToInput(sample));
     const errors = run.quality.checks.filter((item) => !item.pass && item.severity === "error");
     return {
       id: sample.id,
@@ -123,9 +138,15 @@ export function runEvalSuite(): Suite {
 }
 
 export function scoreTicket(ticket: string) {
-  const analysis = classifyTicket(ticket);
-  const plan = buildPlan(analysis);
   const scenario = EVAL_SCENARIOS.find((item) => item.ticket === ticket);
+  const analysis = scenario
+    ? understandTask({
+        task: scenario.ticket,
+        repository: scenario.repository,
+        branch: scenario.branch,
+      })
+    : classifyTicket(ticket);
+  const plan = buildPlan(analysis);
   if (!scenario) {
     return {
       analysis,

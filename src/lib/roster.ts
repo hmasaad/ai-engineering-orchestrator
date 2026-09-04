@@ -1,4 +1,4 @@
-import type { AgentId, TaskType } from "./types";
+import type { AgentId, RoutePattern, TaskType } from "./types";
 
 export type AgentDefinition = {
   id: AgentId;
@@ -9,6 +9,13 @@ export type AgentDefinition = {
 };
 
 export const AGENTS: Record<AgentId, AgentDefinition> = {
+  requirements: {
+    id: "requirements",
+    label: "Requirements Agent",
+    short: "Requirements",
+    role: "Turn a feature ticket into requirements before anyone designs or codes.",
+    origin: "Product/requirements pass — scope, constraints, and success checks.",
+  },
   bug: {
     id: "bug",
     label: "Bug Investigation",
@@ -32,7 +39,7 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
   },
   architect: {
     id: "architect",
-    label: "Software Architect",
+    label: "Architect Agent",
     short: "Architect",
     role: "Design the change before code is written.",
     origin: "Architect Agent — boundaries, data, and tradeoffs.",
@@ -46,23 +53,23 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
   },
   security: {
     id: "security",
-    label: "Security Review",
+    label: "Security Agent",
     short: "Security",
     role: "Threat-model the change before a fix is generated.",
     origin: "Security Review agent — auth, secrets, and abuse cases.",
   },
   implement: {
     id: "implement",
-    label: "Generate Fix",
-    short: "Generate Fix",
-    role: "Propose a scoped change only after cause and review exist.",
+    label: "Developer Agent",
+    short: "Developer",
+    role: "Write the scoped change only after the routed specialists have done their pass.",
     origin: "Implementation adapter — patch sketch, not a blind LLM edit.",
   },
   tests: {
     id: "tests",
-    label: "Test Generation",
-    short: "Generate Tests",
-    role: "Lock the failure mode with regression coverage.",
+    label: "Testing Agent",
+    short: "Testing",
+    role: "Lock the change with coverage so the next edit does not regress it.",
     origin: "Test generation — repro, regression, and abuse cases.",
   },
   evals: {
@@ -107,6 +114,7 @@ export const TASK_TYPE_LABEL: Record<TaskType, string> = {
 };
 
 export const AGENT_ORDER: AgentId[] = [
+  "requirements",
   "bug",
   "research",
   "rca",
@@ -120,6 +128,18 @@ export const AGENT_ORDER: AgentId[] = [
   "pr_review",
   "approval",
 ];
+
+export const PATTERN_LABEL: Record<RoutePattern, string> = {
+  feature: "Feature request",
+  ui: "Simple UI change",
+  bug: "Bug investigation",
+  incident: "Incident",
+  security: "Security",
+  research: "Research",
+  debt: "Technical debt",
+  architecture: "Architecture",
+  vague: "Needs clarification",
+};
 
 export function agentLabel(id: AgentId) {
   return AGENTS[id].label;

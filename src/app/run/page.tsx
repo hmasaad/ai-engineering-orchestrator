@@ -3,11 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AgentGraph } from "@/components/AgentGraph";
+import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
 import { ApprovalGate } from "@/components/ApprovalGate";
 import { ArtifactList } from "@/components/ArtifactList";
+import { ControlCard } from "@/components/ControlCard";
 import { PlanView } from "@/components/PlanView";
 import { QualityReport } from "@/components/QualityReport";
+import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
 import { applyApproval } from "@/lib/orchestrate";
 import { fetchLatest, loadRun, saveRun } from "@/lib/storage";
@@ -88,6 +91,9 @@ export default function RunPage() {
                 </button>
               </div>
               <TaskAnalysisCard analysis={run.analysis} />
+              {run.analysis.route ? <AgentRouterCard route={run.analysis.route} /> : null}
+              {run.state ? <SharedStateCard state={run.state} live /> : null}
+              {run.plan.control ? <ControlCard control={run.plan.control} /> : null}
               <PlanView plan={run.plan} />
               <QualityReport report={run.quality} />
               <ApprovalGate run={run} onDecide={onDecide} />
