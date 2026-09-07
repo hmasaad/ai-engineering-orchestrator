@@ -1,9 +1,11 @@
+import { isEngineeringDecision } from "./consensus";
 import type {
   AreaId,
   ControlKind,
   Risk,
   RiskEngineResult,
   RiskFactor,
+  RiskLane,
   RiskPolicy,
   TaskAnalysis,
   TaskType,
@@ -41,6 +43,8 @@ const SCHEMA_ADD_HINTS = [
   "new column",
   "new database field",
 ];
+
+const API_HINTS = ["api endpoint", "rest endpoint", "add an endpoint", "add a rest", "new endpoint"];
 
 export const PERFORMANCE_HINTS = [
   "slow",
@@ -91,39 +95,84 @@ export function hasDataExfiltration(ticket: string) {
   return any(ticket, EXFIL_HINTS);
 }
 
+export const RISK_LANES: { id: RiskLane; label: string; levels: Risk[]; detail: string }[] = [
+  {
+    id: "auto_execute",
+    label: "Auto Execute",
+    levels: ["low"],
+    detail: "Quality gate, then Action. No human gate.",
+  },
+  {
+    id: "review",
+    label: "Review",
+    levels: ["medium"],
+    detail: "Testing Agent and PR Reviewer must run. Action is automatic after evals.",
+  },
+  {
+    id: "human_approval",
+    label: "Human Approval",
+    levels: ["high", "critical"],
+    detail: "A person signs after the quality gate. CRITICAL also requires a rollback path.",
+  },
+];
+
+export const RISK_CATALOG: { change: string; level: Risk; lane: RiskLane }[] = [
+  { change: "Rename UI text", level: "low", lane: "auto_execute" },
+  { change: "Add UI component", level: "low", lane: "auto_execute" },
+  { change: "Add API endpoint", level: "medium", lane: "review" },
+  { change: "Protocol migration (REST → GraphQL)", level: "high", lane: "human_approval" },
+  { change: "Database migration", level: "high", lane: "human_approval" },
+  { change: "Authentication changes", level: "high", lane: "human_approval" },
+  { change: "Payment logic", level: "critical", lane: "human_approval" },
+  { change: "Production deployment", level: "critical", lane: "human_approval" },
+];
+
 export const RISK_LADDER: {
   level: Risk;
   example: string;
   action: RiskPolicy["action"];
+  lane: RiskLane;
   detail: string;
 }[] = [
   {
     level: "low",
-    example: "Update button text",
+    example: "Rename UI text / add a UI component",
     action: "automatic",
-    detail: "No human gate. Quality gate, then Action.",
+    lane: "auto_execute",
+    detail: "Auto Execute after the quality gate.",
   },
   {
     level: "medium",
-    example: "Add database field",
+    example: "Add API endpoint / add a database field",
     action: "tests_review",
-    detail: "Testing Agent and PR Reviewer must run.",
+    lane: "review",
+    detail: "Review: tests and PR Reviewer. No human gate.",
   },
   {
     level: "high",
-    example: "Modify authentication",
+    example: "Database migration / authentication changes",
     action: "security_human",
-    detail: "Security Review before the patch, then a human after the quality gate.",
+    lane: "human_approval",
+    detail: "Human Approval after evals. Security Review before the patch.",
   },
   {
     level: "critical",
-    example: "Production deployment",
+    example: "Payment logic / production deployment",
     action: "mandatory_human",
-    detail: "A person must approve. The orchestrator never deploys on its own.",
+    lane: "human_approval",
+    detail: "Mandatory human. Security, tests, and a rollback path.",
   },
 ];
 
+function laneFor(level: Risk, vague: boolean): RiskLane {
+  if (vague) return "human_approval";
+  if (level === "low") return "auto_execute";
+  if (level === "medium") return "review";
+  return "human_approval";
+}
+
 export function policyFor(level: Risk, vague = false): RiskPolicy {
+  const lane = laneFor(level, vague);
   if (vague) {
     return {
       autonomous: false,
@@ -131,7 +180,9 @@ export function policyFor(level: Risk, vague = false): RiskPolicy {
       require_review: false,
       require_security: false,
       require_human: true,
+      require_rollback: false,
       action: "mandatory_human",
+      lane,
     };
   }
   switch (level) {
@@ -142,7 +193,9 @@ export function policyFor(level: Risk, vague = false): RiskPolicy {
         require_review: false,
         require_security: false,
         require_human: false,
+        require_rollback: false,
         action: "automatic",
+        lane,
       };
     case "medium":
       return {
@@ -151,7 +204,9 @@ export function policyFor(level: Risk, vague = false): RiskPolicy {
         require_review: true,
         require_security: false,
         require_human: false,
+        require_rollback: false,
         action: "tests_review",
+        lane,
       };
     case "high":
       return {
@@ -160,7 +215,9 @@ export function policyFor(level: Risk, vague = false): RiskPolicy {
         require_review: true,
         require_security: true,
         require_human: true,
+        require_rollback: false,
         action: "security_human",
+        lane,
       };
     case "critical":
       return {
@@ -169,7 +226,9 @@ export function policyFor(level: Risk, vague = false): RiskPolicy {
         require_review: true,
         require_security: true,
         require_human: true,
+        require_rollback: true,
         action: "mandatory_human",
+        lane,
       };
   }
 }
@@ -189,9 +248,9 @@ export function scoreRisk(input: {
   const factors: RiskFactor[] = [];
   let level: Risk = "medium";
 
+  const payments = input.areas.includes("payments");
   const sensitive = input.areas.some((id) => SENSITIVE.includes(id));
-  const uiOnly =
-    input.areas.length > 0 && input.areas.every((id) => UI_ONLY.includes(id));
+  const uiOnly = input.areas.length > 0 && input.areas.every((id) => UI_ONLY.includes(id));
   const additive = any(ticket, SCHEMA_ADD_HINTS) || input.kinds.includes("schema_change");
 
   if (input.vague) {
@@ -202,6 +261,9 @@ export function scoreRisk(input: {
     if (input.kinds.includes("production_deploy")) push(factors, "prod", "Production deployment.");
     if (input.taskType === "incident") push(factors, "incident", "Incident / outage.");
     if (any(ticket, CRITICAL_HINTS)) push(factors, "critical-hint", "Critical language (P0, outage, data loss).");
+  } else if (payments && input.taskType !== "research") {
+    level = "critical";
+    push(factors, "payments", "Payment logic — money can move twice or not at all.");
   } else if (
     input.kinds.includes("destructive") ||
     (input.kinds.includes("database_migration") && !additive)
@@ -229,12 +291,20 @@ export function scoreRisk(input: {
   } else if (hasPerformanceIssue(ticket)) {
     level = "medium";
     push(factors, "performance", "Performance issue — not a LOW UI patch.");
+  } else if (isEngineeringDecision(ticket) || input.taskType === "architecture") {
+    if (isEngineeringDecision(ticket)) {
+      level = "high";
+      push(factors, "decision", "High-risk engineering decision. Do not trust one agent.");
+    } else {
+      level = "medium";
+      push(factors, "architecture", "Design work.");
+    }
+  } else if (any(ticket, API_HINTS) || (input.areas.includes("backend") && input.taskType === "feature")) {
+    level = "medium";
+    push(factors, "api", "API or backend endpoint — tests and review, not a human gate.");
   } else if (input.taskType === "bug") {
     level = "medium";
     push(factors, "bug", "Bug fix — tests and review, not a one-shot patch.");
-  } else if (input.taskType === "architecture") {
-    level = "medium";
-    push(factors, "architecture", "Design work.");
   } else {
     level = "medium";
     push(factors, "default", "Default blast radius is medium.");
@@ -244,12 +314,22 @@ export function scoreRisk(input: {
     push(factors, "infra", "Infrastructure change.");
     if (level === "low" || level === "medium") level = "high";
   }
-  if (input.kinds.includes("dependency_upgrade") && (level === "low")) {
+  if (input.kinds.includes("dependency_upgrade") && level === "low") {
     level = "medium";
     push(factors, "deps", "Dependency upgrade.");
   }
 
-  const policy = policyFor(level, input.vague);
+  const policy = { ...policyFor(level, input.vague) };
+  if (
+    !input.vague &&
+    (level === "critical" ||
+      input.kinds.includes("destructive") ||
+      input.kinds.includes("database_migration") ||
+      input.kinds.includes("production_deploy"))
+  ) {
+    policy.require_rollback = true;
+  }
+
   return {
     level,
     score: LEVEL_SCORE[level],
@@ -263,11 +343,17 @@ export function compactRisk(engine: RiskEngineResult) {
     level: engine.level,
     score: engine.score,
     action: engine.policy.action,
+    lane: engine.policy.lane,
+    require_human_approval: engine.policy.require_human,
+    security_review: engine.policy.require_security,
+    tests_required: engine.policy.require_tests,
+    rollback_required: engine.policy.require_rollback,
     autonomous: engine.policy.autonomous,
     require_tests: engine.policy.require_tests,
     require_review: engine.policy.require_review,
     require_security: engine.policy.require_security,
     require_human: engine.policy.require_human,
+    require_rollback: engine.policy.require_rollback,
     factors: engine.factors.map((item) => item.id),
   };
 }

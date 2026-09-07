@@ -52,10 +52,11 @@ export type AgentId =
   | "pr_review"
   | "merge"
   | "evals"
+  | "consensus"
   | "approval"
   | "pr";
 
-/** Specialist names the Agent Router returns. Control-plane steps (evals, create PR, human) are added later. */
+/** Specialist names the engineering plan returns. Control-plane steps (evals, create PR, human) are added later. */
 export type PublicAgentName =
   | "requirements"
   | "architect"
@@ -90,7 +91,7 @@ export type FiredRouteRule = {
   then: "security" | "database" | "performance";
 };
 
-/** Compact Agent Router output. */
+/** Compact agent-selection output. The engineering plan wraps this. */
 export type AgentRouting = {
   pattern: RoutePattern;
   agents: PublicAgentName[];
@@ -108,6 +109,193 @@ export type AgentRoute = {
   agents: AgentId[];
   routing: AgentRouting;
   skipped: RouteSkip[];
+};
+
+export type EngineeringTool =
+  | "read_repo"
+  | "search_code"
+  | "edit_files"
+  | "run_tests"
+  | "security_review"
+  | "schema_review"
+  | "perf_profile"
+  | "open_pr"
+  | "eval_suite"
+  | "human_gate";
+
+export type RepoModule = {
+  path: string;
+  reason: string;
+};
+
+export type RepoAnalysis = {
+  repository: string;
+  branch: string;
+  areas: AreaId[];
+  modules: RepoModule[];
+  files: string[];
+  blastRadius: "local" | "service" | "cross-cutting";
+};
+
+export type PlanDependency = {
+  from: string;
+  to: string;
+  why: string;
+};
+
+export type RetryPolicy = {
+  allowed: boolean;
+  maxAttempts: number;
+  onFail: "retry_implement" | "hold";
+  reason: string;
+};
+
+export type VerificationTrigger = "review" | "evals" | "evidence";
+
+export type VerificationCycle = {
+  attempt: number;
+  trigger: VerificationTrigger;
+  reason: string;
+  issues: string[];
+  result: "fix" | "pass" | "hold";
+};
+
+export type VerificationOutcome = "idle" | "pending" | "fixing" | "passed" | "exhausted";
+
+export type VerificationLoop = {
+  stages: string[];
+  pass: boolean | null;
+  outcome: VerificationOutcome;
+  attempts: number;
+  cycles: VerificationCycle[];
+};
+
+export type FailureKind =
+  | "tool_failure"
+  | "agent_failure"
+  | "timeout"
+  | "invalid_output"
+  | "test_failure"
+  | "security_failure"
+  | "conflicting_opinions"
+  | "token_limit"
+  | "dependency_failure";
+
+export type FailureCause =
+  | "compilation"
+  | "test_logic"
+  | "environment"
+  | "dependency"
+  | "unknown"
+  | "contract"
+  | "timeout"
+  | "token_limit"
+  | "tool"
+  | "security_finding"
+  | "merge_conflict"
+  | "agent_crash";
+
+export type RecoveryTarget =
+  | "developer"
+  | "infrastructure"
+  | "dependency"
+  | "investigation"
+  | "security"
+  | "human"
+  | "hold";
+
+export type RecoveryStage = "tests" | "review" | "evals";
+
+export type RecoveryDecision = {
+  kind: FailureKind;
+  cause: FailureCause;
+  target: RecoveryTarget;
+  reason: string;
+  fromAgent: AgentId | "orchestrator";
+  evidence: string[];
+};
+
+export type RecoveryEvent = {
+  attempt: number;
+  stage: RecoveryStage;
+  decision: RecoveryDecision;
+  result: "reroute" | "hold" | "recovered";
+};
+
+export type RecoveryOutcome = "idle" | "pending" | "rerouting" | "recovered" | "held";
+
+export type FailureRecovery = {
+  kinds: FailureKind[];
+  routes: { cause: FailureCause; target: RecoveryTarget; label: string }[];
+  outcome: RecoveryOutcome;
+  events: RecoveryEvent[];
+  last: RecoveryDecision | null;
+};
+
+export type DebateStance = "for" | "against" | "mixed";
+
+export type DebateVoice = {
+  agent: AgentId;
+  label: string;
+  stance: DebateStance;
+  summary: string;
+  confidence: number;
+};
+
+export type ConsensusRecommendation = "do_not_migrate" | "migrate" | "hold" | "no_debate";
+
+export type ConsensusResult = {
+  question: string;
+  decision: string;
+  recommendation: ConsensusRecommendation;
+  confidence: number;
+  voices: DebateVoice[];
+  rationale: string[];
+};
+
+export type SuccessCriterion = {
+  id: string;
+  label: string;
+};
+
+export type EngineeringSelection = {
+  pattern: RoutePattern;
+  reason: string;
+  rules: FiredRouteRule[];
+};
+
+export type EngineeringPlan = {
+  taskType: TaskType;
+  risk: Risk;
+  shape: PlannerShape;
+  intent: PlannerResult["intent"];
+  pipeline: string[];
+  repository: RepoAnalysis;
+  agents: PublicAgentName[];
+  tools: EngineeringTool[];
+  dependencies: PlanDependency[];
+  parallel: string[][];
+  humanApproval: { required: boolean; gates: GateId[]; reason: string };
+  success: SuccessCriterion[];
+  retry: RetryPolicy;
+  selection: EngineeringSelection;
+};
+
+export type CompactEngineering = {
+  type: TaskType;
+  areas: AreaId[];
+  files: string[];
+  agents: PublicAgentName[];
+  tools: EngineeringTool[];
+  parallel: string[][];
+  human: boolean;
+  success: string[];
+  retry: RetryPolicy["onFail"];
+};
+
+export type FinalDecision = {
+  outcome: "clarify" | "research" | "recommend" | "hold" | "awaiting_human" | "open_pr";
+  reason: string;
 };
 
 export type FindingSeverity = "nit" | "should_fix" | "blocker";
@@ -142,7 +330,8 @@ export type PlannerShape =
   | "security"
   | "deploy"
   | "debt"
-  | "performance";
+  | "performance"
+  | "decision";
 
 export type PlannerResult = {
   intent: "clarify" | "research" | "change" | "respond";
@@ -151,7 +340,57 @@ export type PlannerResult = {
   constraints: string[];
 };
 
+export type WorkTrack = "backend" | "mobile" | "shared";
+
+export type GraphNodeKind =
+  | "architecture"
+  | "security"
+  | "backend"
+  | "mobile"
+  | "tests"
+  | "integration"
+  | "review"
+  | "other";
+
+export type GraphNode = {
+  id: string;
+  label: string;
+  kind: GraphNodeKind;
+  track?: WorkTrack;
+  stepIds: string[];
+  wave: number;
+};
+
+export type GraphEdge = {
+  from: string;
+  to: string;
+};
+
+export type DependencyGraph = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  parallel: boolean;
+  ascii: string;
+};
+
+export type TaskPlanPhase = {
+  id: "investigation" | "architecture" | "schema" | "performance" | "security" | "implementation" | "tests" | "review";
+  label: string;
+};
+
+export type TaskPlan = {
+  id: string;
+  title: string;
+  requirements: string[];
+  affectedAreas: string[];
+  agents: string[];
+  dependencies: TaskPlanPhase[];
+  graph: DependencyGraph;
+};
+
 export type RiskAction = "automatic" | "tests_review" | "security_human" | "mandatory_human";
+
+export type RiskLane = "auto_execute" | "review" | "human_approval";
 
 export type RiskPolicy = {
   autonomous: boolean;
@@ -159,7 +398,9 @@ export type RiskPolicy = {
   require_review: boolean;
   require_security: boolean;
   require_human: boolean;
+  require_rollback: boolean;
   action: RiskAction;
+  lane: RiskLane;
 };
 
 export type RiskFactor = {
@@ -213,6 +454,7 @@ export type TaskAnalysis = {
   missing: MissingQuestion[];
   controlKinds: ControlKind[];
   planner: PlannerResult;
+  taskPlan: TaskPlan;
   riskEngine: RiskEngineResult;
 };
 
@@ -226,6 +468,8 @@ export type PlanStep = {
   gate?: GateId;
   /** Specialists in the same wave may run in parallel. */
   wave: number;
+  /** Independent execution lane after Architecture / Security. */
+  track?: WorkTrack;
 };
 
 export type ExecutionPlan = {
@@ -235,6 +479,8 @@ export type ExecutionPlan = {
   principle: string;
   route: AgentRoute;
   control: ControlPolicy;
+  engineering?: EngineeringPlan;
+  graph?: DependencyGraph;
 };
 
 export type ArtifactSection = {
@@ -255,6 +501,77 @@ export type Artifact = {
   sections: ArtifactSection[];
   findings: Finding[];
   recommendation: string;
+  stepId?: string;
+  track?: WorkTrack;
+  contract?: AgentContract;
+  evidence?: ClaimRecord;
+};
+
+export type AgentContractStatus = "completed" | "blocked" | "needs_human" | "failed";
+
+export type AgentContractInput = {
+  task: string;
+  context: string[];
+  constraints: string[];
+  repository: { files: string[]; areas: string[] };
+};
+
+export type AgentContractOutput = {
+  status: AgentContractStatus;
+  confidence: number;
+  result: string;
+  evidence: string[];
+  artifacts: string[];
+  risks: string[];
+  findings: { severity: FindingSeverity; title: string }[];
+  files_changed: string[];
+  tests_added: string[];
+  recommendations: string[];
+  next: string[];
+};
+
+export type AgentContract = {
+  agent: AgentId;
+  input: AgentContractInput;
+  output: AgentContractOutput;
+};
+
+export type EvidenceKind =
+  | "file_changed"
+  | "tests_added"
+  | "tests_passed"
+  | "integration"
+  | "security_scan"
+  | "review"
+  | "eval_suite";
+
+export type EvidenceVerdict = "supported" | "unsupported" | "pending";
+
+export type EvidenceItem = {
+  id: string;
+  kind: EvidenceKind;
+  label: string;
+  source: "system";
+  held: boolean;
+};
+
+export type ClaimRecord = {
+  agent: AgentId;
+  stepId?: string;
+  claim: string;
+  agent_says: boolean;
+  system_has_evidence: boolean;
+  verdict: EvidenceVerdict;
+  items: EvidenceItem[];
+};
+
+export type EvidenceEngineResult = {
+  claim: string;
+  verdict: EvidenceVerdict;
+  agent_says: boolean;
+  system_has_evidence: boolean;
+  items: EvidenceItem[];
+  claims: ClaimRecord[];
 };
 
 export type EvalDimensionId =
@@ -394,6 +711,7 @@ export type SharedAgentState = {
   performance: { summary: string; notes: string[] } | Record<string, never>;
   learnings: SharedLearnings | Record<string, never>;
   merged: MergedResult | Record<string, never>;
+  consensus: ConsensusResult | Record<string, never>;
   status: RunStatus;
 };
 
@@ -408,11 +726,17 @@ export type OrchestrationRun = {
   state: SharedAgentState;
   currentStepId: string | null;
   quality: QualityReport;
+  evidence?: EvidenceEngineResult;
+  consensus?: ConsensusResult;
   status: RunStatus;
   pendingGate: GateId | null;
   resumeFrom: number;
   approvals: ApprovalRecord[];
   approval?: ApprovalRecord;
+  retries: number;
+  verification?: VerificationLoop;
+  recovery?: FailureRecovery;
+  decision?: FinalDecision;
 };
 
 export type AgentStepEvent = {

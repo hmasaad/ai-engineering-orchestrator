@@ -1,19 +1,36 @@
-import type { ControlPolicy } from "@/lib/types";
+"use client";
 
-export function ControlCard({ control }: { control: ControlPolicy }) {
+import type { ControlPolicy, EngineeringPlan, FinalDecision } from "@/lib/types";
+
+const PHASES = ["Validation", "Review", "Fix / Retry", "Final Decision", "Action"] as const;
+
+export function ControlCard({
+  control,
+  engineering,
+  decision,
+}: {
+  control: ControlPolicy;
+  engineering?: EngineeringPlan;
+  decision?: FinalDecision;
+}) {
   const human = control.gates.length > 0;
+  const retry = engineering?.retry.allowed ?? false;
 
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        9. Human approval / action
+        10. Review / retry / decision
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">
-        {control.autonomous ? "Action is automatic after the gate" : "Human, then Action"}
+        {decision
+          ? decision.outcome.replaceAll("_", " ")
+          : control.autonomous
+            ? "Action is automatic after the gate"
+            : "Human, then Action"}
       </p>
       <p className="mt-2 text-sm text-ink-soft">
-        Quality gate first. Then a human only when the Risk Engine says HIGH or CRITICAL. Action is
-        opening a PR — never a merge.
+        {decision?.reason ??
+          "Validate, review, then classify failures: compilation and test logic go to Developer; environment to Infrastructure; unknown to Investigation. High-risk decisions debate, then recommend — Action is opening a PR, never a merge."}
       </p>
 
       {control.kinds.length > 0 ? (
@@ -30,9 +47,10 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
       ) : null}
 
       <ol className="mt-4 space-y-0">
-        {["Result Merger", "Quality Gate", "Human Approval", "Action"].map((phase, index) => {
-          const isHuman = phase === "Human Approval";
-          const lit = isHuman ? human : true;
+        {PHASES.map((phase, index) => {
+          const isRetry = phase === "Fix / Retry";
+          const isHuman = phase === "Final Decision" && human;
+          const lit = isRetry ? retry : true;
           return (
             <li key={phase} className="flex flex-col">
               {index > 0 ? (
@@ -40,16 +58,16 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
               ) : null}
               <span
                 className={`w-fit rounded-full border px-3 py-1 font-mono text-[12px] ${
-                  isHuman && lit
-                    ? "border-copper bg-copper/15 text-copper"
-                    : isHuman
+                  phase === "Action"
+                    ? "border-navy bg-navy text-paper"
+                    : isRetry && !retry
                       ? "border-dashed border-rule text-ink-soft line-through decoration-ink-soft/50"
-                      : phase === "Action"
-                        ? "border-navy bg-navy text-paper"
+                      : isHuman
+                        ? "border-copper bg-copper/15 text-copper"
                         : "border-rule bg-paper text-navy"
                 }`}
               >
-                {isHuman ? `[${phase}]` : phase}
+                {phase}
               </span>
             </li>
           );
@@ -78,6 +96,8 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
             action: control.action,
             kinds: control.kinds,
             gates: control.gates.map((item) => ({ id: item.id, before: item.before })),
+            retry: engineering?.retry.onFail ?? "hold",
+            decision: decision?.outcome,
           },
           null,
           2,

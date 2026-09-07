@@ -1,9 +1,11 @@
 import { classifyTicket, hasArea, understandTask } from "../classify";
+import { contractHeld } from "../contract";
+import { buildEvidenceEngine, evidenceHeld } from "../evidence";
 import { buildPlan } from "../plan";
 import { hasAgent, comesBefore, hasGate, gateBefore } from "../plan";
-import { GOOGLE_LOGIN_TICKET, LOGOUT_TICKET, MIGRATION_TICKET, PRODUCTION_DEPLOY_TICKET, SAMPLE_TICKETS, UI_BUTTON_TICKET, PROMPT_INJECTION_TICKET, RAG_POISONING_TICKET, AGENT_HIJACK_TICKET, DB_FIELD_TICKET, PERFORMANCE_TICKET, TOOL_ABUSE_TICKET, UNAUTHORIZED_TICKET, EXFIL_TICKET, MALICIOUS_REPO_TICKET, MALICIOUS_MCP_TICKET } from "../samples";
+import { GOOGLE_LOGIN_TICKET, LOGOUT_TICKET, MIGRATION_TICKET, PRODUCTION_DEPLOY_TICKET, SAMPLE_TICKETS, UI_BUTTON_TICKET, PROMPT_INJECTION_TICKET, RAG_POISONING_TICKET, AGENT_HIJACK_TICKET, DB_FIELD_TICKET, PERFORMANCE_TICKET, GRAPHQL_TICKET, TOOL_ABUSE_TICKET, UNAUTHORIZED_TICKET, EXFIL_TICKET, MALICIOUS_REPO_TICKET, MALICIOUS_MCP_TICKET } from "../samples";
 import { isFilled } from "../state";
-import type { AreaId, FiredRouteRule, PublicAgentName, RoutePattern, SharedAgentState, TaskType } from "../types";
+import type { AreaId, FiredRouteRule, PublicAgentName, RiskLane, RoutePattern, SharedAgentState, TaskType } from "../types";
 import {
   includesAny,
   type RubricId,
@@ -124,6 +126,17 @@ function riskIs(...allowed: string[]): ScenarioAssertion {
   };
 }
 
+function laneIs(lane: RiskLane): ScenarioAssertion {
+  return {
+    id: `lane-${lane}`,
+    dimension: "approval",
+    label: `Risk lane is ${lane.replaceAll("_", " ")}`,
+    test: ({ analysis }) => analysis.riskEngine?.policy.lane === lane,
+    passDetail: `Risk Engine routed to ${lane.replaceAll("_", " ")}.`,
+    failDetail: `Expected Risk Engine lane ${lane.replaceAll("_", " ")}.`,
+  };
+}
+
 function areaIs(area: string): ScenarioAssertion {
   return {
     id: `area-${area.toLowerCase().replace(/\W+/g, "-")}`,
@@ -187,6 +200,21 @@ const SHARED_SHIP: ScenarioAssertion[] = [
     passDetail: "Not a one-shot solve.",
     failDetail: "Collapsed to a single step.",
   },
+  {
+    id: "engineering-plan",
+    dimension: "routing",
+    label: "Engineering plan answers control-plane questions",
+    test: ({ plan, analysis }) => {
+      const engineering = plan.engineering;
+      if (!engineering) return false;
+      if (engineering.agents.join(",") !== analysis.route.routing.agents.join(",")) return false;
+      if (engineering.repository.files.length === 0 || engineering.success.length === 0) return false;
+      const ships = plan.steps.some((step) => step.agent === "evals");
+      return !ships || engineering.tools.includes("eval_suite");
+    },
+    passDetail: "The control plane named files, agents, tools, and success.",
+    failDetail: "Missing an engineering plan, or agent selection drifted from the route.",
+  },
 ];
 
 export const EVAL_SCENARIOS: EvalScenario[] = [
@@ -201,6 +229,7 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
     assertions: [
       typeIs("feature"),
       riskIs("high", "critical"),
+      laneIs("human_approval"),
       areasInclude("authentication", "backend", "mobile", "security"),
       patternIs("feature"),
       routeIs("requirements", "architect", "security", "developer", "testing", "pr_reviewer"),
@@ -208,6 +237,57 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
       needs("requirements", "architect", "security", "implement", "evals", "merge", "approval"),
       omitsControlGate("plan"),
       hasControlGate("ship"),
+      {
+        id: "task-plan-identity",
+        dimension: "routing",
+        label: "Task planner names Google auth work",
+        test: ({ analysis }) => {
+          const plan = analysis.taskPlan;
+          if (!plan) return false;
+          const security = plan.dependencies.findIndex((item) => item.id === "security");
+          const impl = plan.dependencies.findIndex((item) => item.id === "implementation");
+          return (
+            plan.requirements.includes("Google authentication") &&
+            plan.requirements.includes("Existing user linking") &&
+            security >= 0 &&
+            impl >= 0 &&
+            security < impl
+          );
+        },
+        passDetail: "TASK plan lists Google auth, linking, and Security before Implementation.",
+        failDetail: "The task planner did not produce an identity work breakdown, or Security sat after Implementation.",
+      },
+      {
+        id: "dependency-graph-fork",
+        dimension: "order",
+        label: "Backend and mobile tracks run in parallel after Security",
+        test: ({ plan }) => {
+          const impl = plan.steps.filter((step) => step.agent === "implement");
+          const tests = plan.steps.filter((step) => step.agent === "tests");
+          const security = plan.steps.findIndex((step) => step.agent === "security");
+          const firstImpl = plan.steps.findIndex((step) => step.agent === "implement");
+          const lastTest = plan.steps.reduce(
+            (last, step, index) => (step.agent === "tests" ? index : last),
+            -1,
+          );
+          const merge = plan.steps.findIndex((step) => step.agent === "merge");
+          return (
+            Boolean(plan.graph?.parallel) &&
+            impl.length === 2 &&
+            impl[0].wave === impl[1].wave &&
+            impl.some((step) => step.track === "backend") &&
+            impl.some((step) => step.track === "mobile") &&
+            tests.length === 2 &&
+            tests[0].wave === tests[1].wave &&
+            security >= 0 &&
+            firstImpl > security &&
+            lastTest >= 0 &&
+            merge > lastTest
+          );
+        },
+        passDetail: "Security sits on the stem. Backend and mobile then run in the same wave.",
+        failDetail: "Google login stayed a sequential Agent A → B → C pipeline.",
+      },
       {
         id: "ship-before-pr",
         dimension: "order",
@@ -229,6 +309,78 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
         "Agents share one blackboard",
         "Requirements, architecture, findings, files, tests, and review never landed in shared state.",
       ),
+      {
+        id: "agent-contracts",
+        dimension: "specialists",
+        label: "Every specialist returns a contract",
+        test: ({ artifacts }) =>
+          Array.isArray(artifacts) &&
+          artifacts.length > 0 &&
+          artifacts.every((item) => contractHeld(item)),
+        passDetail: "Every agent returned structured output, not Done.",
+        failDetail: "A specialist returned Done, or omitted a contract.",
+      },
+      {
+        id: "implement-contract-files",
+        dimension: "specialists",
+        label: "Developer contracts list files_changed",
+        test: ({ artifacts }) => {
+          const implement = artifacts?.filter((item) => item.agent === "implement") ?? [];
+          return (
+            implement.length > 0 &&
+            implement.every((item) => (item.contract?.output.files_changed.length ?? 0) > 0)
+          );
+        },
+        passDetail: "Implementation contracts name the files they touched.",
+        failDetail: "A Developer Agent contract had an empty files_changed list.",
+      },
+      {
+        id: "evidence-engine",
+        dimension: "specialists",
+        label: "System evidence backs the ship claim",
+        test: ({ artifacts, state, analysis, plan }) => {
+          if (!artifacts?.length || !state) return false;
+          const engine = buildEvidenceEngine({ analysis, plan, artifacts, state });
+          return evidenceHeld(engine) && engine.items.some((item) => item.kind === "file_changed" && item.held);
+        },
+        passDetail: "The Evidence Engine found files, tests, evals, integration, and a security scan.",
+        failDetail: "Google login shipped on an agent claim without system evidence.",
+      },
+      {
+        id: "verification-loop",
+        dimension: "order",
+        label: "Review findings send Developer through Tests and Review again",
+        test: ({ retries, verification, plan }) =>
+          (retries ?? 0) > 0 &&
+          verification?.outcome === "passed" &&
+          verification.cycles.some((cycle) => cycle.trigger === "review") &&
+          Boolean(plan.steps.find((step) => step.agent === "security")) &&
+          (plan.steps.findIndex((step) => step.agent === "security") ?? 99) <
+            (plan.steps.findIndex((step) => step.agent === "implement") ?? 0),
+        passDetail: "PR Reviewer found issues. Orchestrator fixed, re-tested, and re-reviewed. Security stayed before Developer.",
+        failDetail: "Google login skipped the verification loop, or moved Security after Tests.",
+      },
+      {
+        id: "failure-recovery",
+        dimension: "order",
+        label: "Test compilation is classified to Developer, not the same prompt",
+        test: ({ recovery, plan }) =>
+          recovery?.outcome === "recovered" &&
+          recovery.events.some(
+            (event) =>
+              event.decision.kind === "test_failure" &&
+              event.decision.cause === "compilation" &&
+              event.decision.target === "developer",
+          ) &&
+          recovery.events.some(
+            (event) => event.decision.kind === "invalid_output" && event.decision.target === "developer",
+          ) &&
+          Boolean(plan.steps.find((step) => step.agent === "security")) &&
+          (plan.steps.findIndex((step) => step.agent === "security") ?? 99) <
+            (plan.steps.findIndex((step) => step.agent === "implement") ?? 0),
+        passDetail: "Failure Classifier sent compilation to Developer, then invalid review output to Developer. Security stayed before Developer.",
+        failDetail: "Google login retried the same prompt, skipped classification, or moved Security after Tests.",
+      },
       {
         id: "not-a-bug",
         dimension: "routing",
@@ -378,6 +530,7 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
     assertions: [
       patternIs("ui"),
       riskIs("low"),
+      laneIs("auto_execute"),
       routeIs("developer"),
       rulesAre(),
       needs("implement", "evals", "merge"),
@@ -475,7 +628,7 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
   {
     id: "payment-debt",
     label: "Payment webhook debt",
-    expected: "Tech debt in Payments with security because of double-charge",
+    expected: "Tech debt in Payments · CRITICAL · human + rollback",
     ticket: SAMPLE_TICKETS.find((item) => item.id === "payment-debt")!.ticket,
     headline: ["routing", "specialists", "approval"],
     assertions: [
@@ -489,14 +642,16 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
         failDetail: "Double-charge debt was mis-routed.",
       },
       areaIs("Payments"),
+      riskIs("critical"),
+      laneIs("human_approval"),
       needs("security", "approval"),
       {
-        id: "not-low",
-        dimension: "routing",
-        label: "Risk is not low",
-        test: ({ analysis }) => analysis.risk !== "low",
-        passDetail: "Double-charge is not low risk.",
-        failDetail: "Payment retries were marked low risk.",
+        id: "rollback-required",
+        dimension: "approval",
+        label: "CRITICAL payment policy requires rollback",
+        test: ({ analysis }) => Boolean(analysis.riskEngine?.policy.require_rollback),
+        passDetail: "Payment logic requires a rollback path.",
+        failDetail: "Payment logic was scored without rollback_required.",
       },
       ...SHARED_SHIP,
     ],
@@ -517,9 +672,18 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
         failDetail: "A production deploy was not gated as production_deploy.",
       },
       riskIs("critical"),
+      laneIs("human_approval"),
       patternIs("deploy"),
       omitsControlGate("plan"),
       hasControlGate("ship"),
+      {
+        id: "rollback-required",
+        dimension: "approval",
+        label: "CRITICAL policy requires rollback",
+        test: ({ analysis }) => Boolean(analysis.riskEngine?.policy.require_rollback),
+        passDetail: "Production deploy requires a rollback path.",
+        failDetail: "CRITICAL deploy was scored without rollback_required.",
+      },
       {
         id: "human-after-evals",
         dimension: "order",
@@ -651,6 +815,7 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
     headline: ["routing", "specialists", "proportion"],
     assertions: [
       riskIs("medium"),
+      laneIs("review"),
       patternIs("schema"),
       routeIs("database", "developer", "testing", "pr_reviewer"),
       rulesAre("database-change"),
@@ -699,6 +864,85 @@ export const EVAL_SCENARIOS: EvalScenario[] = [
         "Performance Agent ran but shared state.performance stayed empty.",
       ),
       ...SHARED_SHIP,
+    ],
+  },
+  {
+    id: "graphql-migrate",
+    label: "REST to GraphQL",
+    expected: "HIGH decision · Architect, Performance, Security, Developer debate · DO NOT MIGRATE 87% · no PR",
+    ticket: GRAPHQL_TICKET,
+    headline: ["routing", "specialists", "oneshot", "approval"],
+    assertions: [
+      typeIs("architecture"),
+      riskIs("high"),
+      laneIs("human_approval"),
+      patternIs("architecture"),
+      routeIs("architect", "performance", "security", "developer"),
+      rulesAre("security-sensitive"),
+      needs("architect", "performance", "security", "implement", "consensus", "approval"),
+      omits("pr", "tests", "merge", "evals", "requirements"),
+      omitsControlGate("ship"),
+      hasControlGate("plan"),
+      {
+        id: "security-before-developer",
+        dimension: "order",
+        label: "Security sits before Developer",
+        test: ({ plan }) => comesBefore(plan, "security", "implement"),
+        passDetail: "Security spoke before Developer.",
+        failDetail: "Security sat after Developer, or was missing.",
+      },
+      {
+        id: "consensus-do-not-migrate",
+        dimension: "specialists",
+        label: "Consensus says DO NOT MIGRATE at 87%",
+        test: ({ consensus, artifacts }) => {
+          const artifact = artifacts?.find((item) => item.agent === "consensus");
+          const decision = consensus?.decision ?? artifact?.title ?? "";
+          const confidence = consensus?.confidence ?? Number((/(\d+)%/.exec(artifact?.summary ?? "")?.[1] ?? "0"));
+          return /DO NOT MIGRATE/i.test(decision) && confidence === 87;
+        },
+        passDetail: "Decision: DO NOT MIGRATE. Confidence: 87%.",
+        failDetail: "Consensus did not recommend DO NOT MIGRATE at 87%.",
+      },
+      {
+        id: "debate-voices",
+        dimension: "specialists",
+        label: "Four specialists spoke",
+        test: ({ consensus, artifacts }) => {
+          const voices = consensus?.voices ?? [];
+          const titles = (artifacts ?? [])
+            .filter((item) => ["architect", "performance", "security", "implement"].includes(item.agent))
+            .map((item) => item.title);
+          return (
+            voices.length === 4 &&
+            titles.some((title) => /potential architectural benefits/i.test(title)) &&
+            titles.some((title) => /no measurable benefit/i.test(title)) &&
+            titles.some((title) => /additional attack surface/i.test(title)) &&
+            titles.some((title) => /3–4 weeks|3-4 weeks/i.test(title))
+          );
+        },
+        passDetail: "Architect, Performance, Security, and Developer each left an opinion.",
+        failDetail: "A debate voice was missing.",
+      },
+      {
+        id: "decision-not-a-pr",
+        dimension: "proportion",
+        label: "No ship plan",
+        test: ({ plan, analysis }) =>
+          !hasAgent(plan, "pr") && !hasAgent(plan, "evals") && analysis.asksForChange === false,
+        passDetail: "The orchestrator recommended. It did not open a PR.",
+        failDetail: "A should-we ticket was turned into a ship plan.",
+      },
+      stateHas(
+        (state) =>
+          isFilled(state.architecture) &&
+          isFilled(state.performance) &&
+          state.security_findings.length > 0 &&
+          isFilled(state.consensus) &&
+          state.files_changed.length === 0,
+        "Debate landed on the blackboard without a diff",
+        "Consensus or specialist notes never landed, or Developer wrote a patch.",
+      ),
     ],
   },
   {

@@ -14,7 +14,7 @@ export function ResultMergerCard({
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        6. Result merger
+        7. Result merger
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">
         {empty ? "Waiting for specialists" : merged.recommendation === "hold" ? "Hold" : "Ready for the gate"}

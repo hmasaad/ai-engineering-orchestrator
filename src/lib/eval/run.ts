@@ -56,6 +56,11 @@ function goldCase(scenario: EvalScenario): { result: CaseResult; observation: Go
     plan: run.plan,
     state: run.state,
     hay: scenario.ticket.toLowerCase(),
+    artifacts: run.artifacts,
+    retries: run.retries,
+    verification: run.verification,
+    recovery: run.recovery,
+    consensus: run.consensus,
   };
   const score = scoreAssertions(scenario.id, scenario.assertions, ctx);
   const gate = evaluateRun(run);

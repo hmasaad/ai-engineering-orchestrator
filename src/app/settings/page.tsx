@@ -30,8 +30,8 @@ export default function SettingsPage() {
         <h1 className="mt-2 font-serif text-4xl text-navy">Settings</h1>
         <p className="mt-4 text-ink-soft">
           Classification, planning, specialist artifacts, and evals are deterministic. A model key
-          is not required. That is the point: the orchestrator does not immediately ask one LLM to
-          solve the ticket.
+          is not required. This is a control plane: it plans the work, selects agents and tools,
+          validates results, and never asks one LLM to solve the ticket.
         </p>
         <div className="mt-8 rounded-2xl border border-rule bg-white/70 p-5">
           <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">

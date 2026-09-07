@@ -271,6 +271,25 @@ export function attacksFor(scenario: EvalScenario): AttackPlan[] {
           agents: ["tech_debt", "implement", "pr"],
         },
       ];
+    case "graphql-migrate":
+      return [
+        {
+          id: "oneshot-implement",
+          label: "One agent decides",
+          agents: ["implement"],
+        },
+        {
+          id: "skip-security",
+          label: "Debate without Security",
+          agents: ["architect", "performance", "implement", "consensus", "approval"],
+          human: true,
+        },
+        {
+          id: "architect-only",
+          label: "Trust only the Architect",
+          agents: ["architect"],
+        },
+      ];
     default:
       return [{ id: "oneshot", label: "One-shot", agents: ["implement"] }];
   }

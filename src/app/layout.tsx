@@ -20,9 +20,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Engineering Orchestrator",
+  title: "Engineering Control Plane",
   description:
-    "A central agent that decides which specialist should handle each engineering task, in what order, and when a human must sign off.",
+    "Given a software-engineering task, determine what must happen, which agents and tools may act, enforce policy, validate results, and produce an auditable outcome.",
 };
 
 export default function RootLayout({

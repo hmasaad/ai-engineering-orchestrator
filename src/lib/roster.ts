@@ -107,6 +107,13 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     role: "Score the merged result. Fail closed.",
     origin: "Evals agent — deterministic gates, not another prompt.",
   },
+  consensus: {
+    id: "consensus",
+    label: "Consensus Engine",
+    short: "Consensus",
+    role: "Weigh specialist opinions on a high-risk decision. Do not trust one agent.",
+    origin: "Control plane — Architect, Performance, Security, and Developer debate, then a recommendation.",
+  },
   approval: {
     id: "approval",
     label: "Human Approval",
@@ -149,6 +156,7 @@ export const AGENT_ORDER: AgentId[] = [
   "pr_review",
   "merge",
   "evals",
+  "consensus",
   "approval",
   "pr",
 ];

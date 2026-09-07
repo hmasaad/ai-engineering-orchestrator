@@ -162,7 +162,9 @@ export function buildControlPolicy(
         ? "CRITICAL: mandatory human approval after the quality gate. The orchestrator will not take Action alone."
         : kinds.includes("destructive") || kinds.includes("database_migration")
           ? "Destructive or migration work needs a human after the quality gate."
-          : "HIGH: Security already ran. A person approves after the quality gate, before Action.";
+          : analysis.asksForChange
+            ? "HIGH: Security already ran. A person approves after the quality gate, before Action."
+            : "HIGH-risk decision. A person accepts the consensus recommendation. No PR.";
     if (shipping && agents.includes("pr")) {
       gates.push(gate("ship", "pr", why));
     } else {
@@ -193,12 +195,14 @@ export function compactControl(policy: ControlPolicy) {
 }
 
 export const CONTROL_PHASES = [
-  "Planner",
-  "Risk Engine",
-  "Agent Router",
-  "Agents",
-  "Result Merger",
-  "Quality Gate",
-  "Human Approval",
-  "Action",
+  "Task Understanding",
+  "Repository Analysis",
+  "Risk Assessment",
+  "Engineering Plan",
+  "Agent Selection",
+  "Execution",
+  "Validation",
+  "Review",
+  "Fix / Retry",
+  "Final Decision",
 ] as const;

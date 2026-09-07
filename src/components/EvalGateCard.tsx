@@ -18,7 +18,7 @@ export function EvalGateCard({
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        8. Evaluation / quality gate
+        9. Evaluation / quality gate
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">{passed ? "PASS" : "FAIL"}</p>
       <p className="mt-2 text-sm text-ink-soft">

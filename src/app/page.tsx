@@ -2,28 +2,38 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AgentContractCard } from "@/components/AgentContractCard";
 import { AgentGraph } from "@/components/AgentGraph";
 import { AgentProgress } from "@/components/AgentProgress";
-import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
 import { ControlCard } from "@/components/ControlCard";
+import { EngineeringPlannerCard } from "@/components/EngineeringPlannerCard";
 import { EvalGateCard } from "@/components/EvalGateCard";
+import { EvidenceEngineCard } from "@/components/EvidenceEngineCard";
 import { GuardrailsCard } from "@/components/GuardrailsCard";
 import { LearningsCard } from "@/components/LearningsCard";
 import { PlanView } from "@/components/PlanView";
-import { PlannerCard } from "@/components/PlannerCard";
+import { RepoAnalysisCard } from "@/components/RepoAnalysisCard";
 import { ResultMergerCard } from "@/components/ResultMergerCard";
 import { RiskEngineCard } from "@/components/RiskEngineCard";
 import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
+import { TaskPlannerCard } from "@/components/TaskPlannerCard";
+import { VerificationLoopCard } from "@/components/VerificationLoopCard";
+import { FailureRecoveryCard } from "@/components/FailureRecoveryCard";
+import { ConsensusCard } from "@/components/ConsensusCard";
 import { describeStep, readSse } from "@/lib/client";
 import { understandTask } from "@/lib/classify";
+import { draftEvidence } from "@/lib/evidence";
 import { buildPlan } from "@/lib/plan";
 import { compactGate, evaluatePlan } from "@/lib/quality";
 import { SAMPLE_TICKETS, sampleToInput } from "@/lib/samples";
 import { draftState } from "@/lib/state";
 import { saveRun } from "@/lib/storage";
-import type { AgentId, AgentStepEvent, OrchestrationRun, SharedAgentState } from "@/lib/types";
+import { draftVerification } from "@/lib/verification";
+import { draftRecovery } from "@/lib/recovery";
+import { draftConsensus } from "@/lib/consensus";
+import type { AgentStepEvent, OrchestrationRun, SharedAgentState } from "@/lib/types";
 
 export default function HomePage() {
   const router = useRouter();
@@ -32,7 +42,7 @@ export default function HomePage() {
   const [branch, setBranch] = useState("feature/google-login");
   const [running, setRunning] = useState(false);
   const [current, setCurrent] = useState<AgentStepEvent | null>(null);
-  const [completed, setCompleted] = useState<AgentId[]>([]);
+  const [completed, setCompleted] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [liveState, setLiveState] = useState<SharedAgentState | null>(null);
@@ -47,6 +57,10 @@ export default function HomePage() {
     () => compactGate(evaluatePlan(analysis, plan, ticket)),
     [analysis, plan, ticket],
   );
+  const draftEngine = useMemo(() => draftEvidence(analysis, plan), [analysis, plan]);
+  const draftLoop = useMemo(() => draftVerification(plan), [plan]);
+  const draftRecover = useMemo(() => draftRecovery(plan), [plan]);
+  const draftDebate = useMemo(() => draftConsensus(analysis, plan), [analysis, plan]);
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("sample");
@@ -91,7 +105,7 @@ export default function HomePage() {
         if (event === "artifact" || event === "state") {
           const runData = data as OrchestrationRun;
           last = runData;
-          setCompleted(runData.artifacts.map((item) => item.agent));
+          setCompleted(runData.artifacts.map((item) => item.stepId ?? item.agent));
           if (runData.state) setLiveState(runData.state);
         }
         if (event === "run") {
@@ -121,16 +135,16 @@ export default function HomePage() {
       <main className="mx-auto grid max-w-6xl gap-10 px-6 py-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-blueprint">
-            Multi-agent engineering workflow
+            AI Engineering Control Plane
           </p>
           <h1 className="mt-2 font-serif text-4xl tracking-tight text-navy">
             Don&apos;t ask one model to solve the ticket.
           </h1>
           <p className="mt-4 max-w-xl text-ink-soft">
-            The orchestrator starts with Task Understanding, then the Agent Router picks specialists.
-            The orchestrator starts with Task Understanding, then a Planner and Risk Engine run side
-            by side. The router picks specialists from that risk. Results merge, evals fail closed,
-            and a human is required only when risk is HIGH or CRITICAL.
+            Given a software-engineering task, the control plane decides what must happen, which
+            agents and tools may act, which files are in blast radius, what can run in parallel, and
+            what success means. It validates every result, retries a failed patch once if guardrails
+            held, and never merges.
           </p>
 
           <label className="mt-8 block">
@@ -223,30 +237,41 @@ export default function HomePage() {
 
           <div className="mt-8 grid gap-4">
             <TaskAnalysisCard analysis={analysis} />
-            {analysis.planner ? <PlannerCard planner={analysis.planner} /> : null}
+            {analysis.taskPlan ? <TaskPlannerCard plan={analysis.taskPlan} /> : null}
+            {plan.engineering ? <RepoAnalysisCard repo={plan.engineering.repository} /> : null}
             {analysis.riskEngine ? <RiskEngineCard engine={analysis.riskEngine} /> : null}
-            {analysis.route ? <AgentRouterCard route={analysis.route} /> : null}
+            {plan.engineering ? (
+              <EngineeringPlannerCard plan={plan.engineering} skipped={analysis.route?.skipped} />
+            ) : null}
+            <AgentContractCard />
             <SharedStateCard state={liveState ?? emptyState} live={Boolean(liveState)} />
             <LearningsCard ticket={ticket} analysis={analysis} />
             <ResultMergerCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <EvidenceEngineCard engine={draftEngine} />
+            <VerificationLoopCard loop={draftLoop} />
+            <FailureRecoveryCard recovery={draftRecover} />
+            <ConsensusCard result={draftDebate} />
             <GuardrailsCard ticket={ticket} analysis={analysis} plan={plan} />
             <EvalGateCard gate={draftGate} />
-            <ControlCard control={plan.control} />
+            <ControlCard
+              control={plan.control}
+              engineering={plan.engineering}
+            />
             <PlanView plan={plan} />
           </div>
         </div>
 
         <aside className="rounded-2xl border border-rule bg-white/60 p-5">
           <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-            Dispatch graph
+            Control-plane graph
           </p>
           <p className="mt-1 text-sm text-ink-soft">
-            The graph is Planner + Risk Engine → specialists → merger → gate.
+            Understand → repo → risk → plan → graph → execute → validate → decide.
           </p>
           <div className="mt-6">
             <AgentGraph
               plan={plan}
-              current={current?.agent ?? null}
+              current={current?.id ?? current?.agent ?? null}
               completed={completed}
               running={running}
             />

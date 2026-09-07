@@ -1,14 +1,18 @@
+import { fulfillContract } from "./contract";
 import { GUARDRAIL_CATALOG } from "./guardrails";
 import { compactMerge } from "./merge";
 import { compactGate, evaluateRun } from "./quality";
 import { AGENTS } from "./roster";
 import { hasArea } from "./classify";
+import { buildConsensus, specialistDebate } from "./consensus";
 import { isFilled, initSharedState } from "./state";
+import { compilationLoopIssues, reviewRecovered, testRecovered } from "./recovery";
+import { reviewLoopIssues } from "./verification";
 import type { AgentId, Artifact, ArtifactSection, OrchestrationRun, PlanStep, SharedAgentState } from "./types";
 
 type Ctx = {
   ticket: string;
-  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts" | "state" | "status">;
+  run: Pick<OrchestrationRun, "analysis" | "plan" | "artifacts" | "state" | "status" | "retries" | "verification" | "recovery">;
   step: PlanStep;
 };
 
@@ -301,6 +305,30 @@ function rcaArtifact(ctx: Ctx): Artifact {
 }
 
 function architectArtifact(ctx: Ctx): Artifact {
+  const debate = specialistDebate("architect", ctx.run.analysis);
+  if (debate) {
+    return {
+      agent: "architect",
+      title: debate.summary,
+      summary:
+        "Potential architectural benefits: one graph, fewer round-trips, typed clients. The existing REST modules already own the contracts. A rewrite is not required to get typed clients.",
+      sections: withLearnings(
+        [
+          section("Opinion", [
+            debate.summary,
+            "Keep REST as the contract. Typed clients can be generated without a protocol rewrite.",
+          ]),
+          section("Boundaries", [
+            "Do not stand up a parallel GraphQL runtime beside every REST handler.",
+            "If a client needs aggregation, add a BFF in the existing module.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [],
+      recommendation: "Mixed. Architecture is not a reason to migrate. Consensus still waits for Performance, Security, and Developer.",
+    };
+  }
   const requirements = stateOf(ctx).requirements;
   const fromRequirements = isFilled(requirements)
     ? section(
@@ -382,6 +410,37 @@ function debtArtifact(ctx: Ctx): Artifact {
 }
 
 function securityArtifact(ctx: Ctx): Artifact {
+  const debate = specialistDebate("security", ctx.run.analysis);
+  if (debate) {
+    return {
+      agent: "security",
+      title: debate.summary,
+      summary:
+        "Additional attack surface: introspection, batched queries, nested depth, and a wider authz surface than the current resource URLs.",
+      sections: withLearnings(
+        [
+          section("Threats", [
+            "GraphQL introspection leaking the graph.",
+            "Batched and nested queries as a cheap DoS.",
+            "Field-level authz is easier to miss than REST resource URLs.",
+          ]),
+          section("Required controls", [
+            "Do not add a new query language until REST has a named authz defect.",
+            "Keep the existing resource URLs.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [
+        {
+          severity: "should_fix",
+          title: "Additional attack surface",
+          detail: "GraphQL expands parsing, depth, and authorization compared with REST.",
+        },
+      ],
+      recommendation: "Against. Do not migrate for a cleaner schema. Consensus next.",
+    };
+  }
   const architecture = stateOf(ctx).architecture;
   const fromArchitecture = isFilled(architecture)
     ? section(
@@ -515,6 +574,30 @@ function databaseArtifact(ctx: Ctx): Artifact {
 }
 
 function performanceArtifact(ctx: Ctx): Artifact {
+  const debate = specialistDebate("performance", ctx.run.analysis);
+  if (debate) {
+    return {
+      agent: "performance",
+      title: debate.summary,
+      summary:
+        "No measurable benefit. REST handlers are not the p95. GraphQL resolvers add N+1 risk and a new runtime without a measured win.",
+      sections: withLearnings(
+        [
+          section("Bottleneck", [
+            "No p95, payload size, or round-trip budget was given.",
+            "GraphQL does not make an unmeasured REST API faster.",
+          ]),
+          section("Do not", [
+            "Do not migrate protocols to chase an unmeasured win.",
+            "Do not add a GraphQL dataloader layer as the first performance change.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [],
+      recommendation: "Against. Measure REST first. Consensus still waits for Security and Developer.",
+    };
+  }
   return {
     agent: "performance",
     title: `Slow path in ${ctx.run.analysis.area}`,
@@ -537,7 +620,46 @@ function performanceArtifact(ctx: Ctx): Artifact {
   };
 }
 
+function flutterTicket(ctx: Ctx) {
+  return /flutter/i.test(ctx.ticket);
+}
+
 function implementArtifact(ctx: Ctx): Artifact {
+  const debate = specialistDebate("implement", ctx.run.analysis);
+  if (debate) {
+    const shared = stateOf(ctx);
+    const fromState = [
+      isFilled(shared.architecture) && "summary" in shared.architecture
+        ? `Architecture: ${shared.architecture.summary}`
+        : null,
+      isFilled(shared.performance) && "summary" in shared.performance
+        ? `Performance: ${shared.performance.summary}`
+        : null,
+      ...shared.security_findings.map((item) => `Security (${item.severity}): ${item.title}`),
+    ].filter((item): item is string => Boolean(item));
+    return {
+      agent: "implement",
+      title: debate.summary,
+      summary:
+        "Migration cost estimated at 3–4 weeks: schema, resolvers, client generation, and dual-running REST. That is a platform rewrite, not a patch.",
+      sections: withLearnings(
+        [
+          ...(fromState.length ? [section("From shared state", fromState)] : []),
+          section("Cost", [
+            debate.summary,
+            "Schema, resolvers, client generation, and a dual-run of REST.",
+            "This is an opinion, not a diff.",
+          ]),
+          section("Not a patch", [
+            "Do not open a PR. Consensus Engine weighs this against the other specialists.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [],
+      recommendation: "Against. Do not start the rewrite. Consensus Engine next.",
+    };
+  }
   const shared = stateOf(ctx);
   const findings = shared.security_findings;
   const architecture = shared.architecture;
@@ -576,6 +698,47 @@ function implementArtifact(ctx: Ctx): Artifact {
       ),
       findings: [],
       recommendation: rca?.recommendation ?? "Generate tests for upgrade and for actual reuse.",
+    };
+  }
+
+  if (identityFeature(ctx) && ctx.step.track === "backend") {
+    return {
+      agent: "implement",
+      title: "Backend Google token verify",
+      summary: "Verify aud/iss/expiry, link `sub`, and issue the app session. Do not trust the client.",
+      sections: withLearnings(
+        [
+          ...(fromState.length ? [section("From shared state", fromState)] : []),
+          section("Change", [
+            "Backend: verify aud/iss/expiry, link `sub`, issue the app session.",
+            "Do not trust the client as the source of truth.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [],
+      recommendation: "Tests must cover account linking and a forged ID token.",
+    };
+  }
+
+  if (identityFeature(ctx) && ctx.step.track === "mobile") {
+    const client = flutterTicket(ctx) ? "Flutter" : "Mobile";
+    return {
+      agent: "implement",
+      title: `${client} Google Sign-In SDK`,
+      summary: `${client} only hosts the SDK, then exchanges the token with the backend.`,
+      sections: withLearnings(
+        [
+          ...(fromState.length ? [section("From shared state", fromState)] : []),
+          section("Change", [
+            `${client}: Google Sign-In SDK, then exchange the token with the backend.`,
+            "Do not treat the client as the source of truth.",
+          ]),
+        ],
+        ctx,
+      ),
+      findings: [],
+      recommendation: "Tests must cover a cancelled Sign-In and a forged ID token from the client.",
     };
   }
 
@@ -627,6 +790,42 @@ function testsArtifact(ctx: Ctx): Artifact {
     ...files.map((file) => `Cover ${file}`),
     ...findings.map((item) => `Do not green a fix that ignores: ${item.title}`),
   ];
+
+  if (identityFeature(ctx) && ctx.step.track === "backend") {
+    return {
+      agent: "tests",
+      title: "Backend identity regressions",
+      summary: "Cover token verify, account linking, and a forged ID token.",
+      sections: [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
+        section("Cases", [
+          "A valid Google token links to the existing user and issues an app session.",
+          "A forged ID token is rejected.",
+          "Email-only matching does not take over another account.",
+        ]),
+      ],
+      findings: [],
+      recommendation: "Quality gate next after both tracks join.",
+    };
+  }
+
+  if (identityFeature(ctx) && ctx.step.track === "mobile") {
+    const client = flutterTicket(ctx) ? "Flutter" : "Mobile";
+    return {
+      agent: "tests",
+      title: `${client} Sign-In regressions`,
+      summary: `Cover the ${client} SDK happy path and a cancelled sign-in.`,
+      sections: [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
+        section("Cases", [
+          `${client} Sign-In SDK returns a token and the app exchanges it with the backend.`,
+          "A cancelled sign-in leaves the existing session untouched.",
+        ]),
+      ],
+      findings: [],
+      recommendation: "Quality gate next after both tracks join.",
+    };
+  }
 
   if (authBug(ctx)) {
     return {
@@ -765,6 +964,8 @@ function reviewArtifact(ctx: Ctx): Artifact {
     ...shared.tests.slice(0, 3).map((item) => `Test: ${item}`),
     ...shared.security_findings.map((item) => `Open security item: ${item.title}`),
   ];
+  const recovered = reviewRecovered(ctx.run);
+  const findings = reviewLoopIssues(ctx.run.analysis, recovered);
 
   return {
     agent: "pr_review",
@@ -780,16 +981,12 @@ function reviewArtifact(ctx: Ctx): Artifact {
         "No secrets in the diff.",
       ]),
     ],
-    findings: authBug(ctx)
-      ? [
-          {
-            severity: "should_fix",
-            title: "Call out the migrate window in the PR body",
-            detail: "Reviewers need to see that reuse detection stays on.",
-          },
-        ]
-      : [],
-    recommendation: "Result Merger next.",
+    findings,
+    recommendation: recovered
+      ? "Review passed after the fix. Evals next."
+      : findings.length > 0
+        ? "Orchestrator must fix these before evals."
+        : "Evals next.",
   };
 }
 
@@ -829,6 +1026,34 @@ function approvalArtifact(ctx: Ctx): Artifact {
   };
 }
 
+function consensusArtifact(ctx: Ctx): Artifact {
+  const result = buildConsensus({
+    ticket: ctx.ticket,
+    analysis: ctx.run.analysis,
+    plan: ctx.run.plan,
+    artifacts: ctx.run.artifacts,
+  });
+  return {
+    agent: "consensus",
+    title: `Decision: ${result.decision}`,
+    summary: `Confidence: ${result.confidence}%`,
+    sections: [
+      section(
+        "Voices",
+        result.voices.map((item) => `${item.label}: ${item.summary}`),
+      ),
+      section("Rationale", result.rationale.length ? result.rationale : [result.decision]),
+    ],
+    findings: [],
+    recommendation:
+      result.decision === "DO NOT MIGRATE"
+        ? "Do not migrate. Keep REST. A person still accepts this recommendation."
+        : result.recommendation === "migrate"
+          ? "Migrate only after a person accepts. No PR from this debate."
+          : "Hold until the specialists finish speaking.",
+  };
+}
+
 const BUILDERS: Record<AgentId, (ctx: Ctx) => Artifact> = {
   requirements: requirementsArtifact,
   bug: bugArtifact,
@@ -844,6 +1069,7 @@ const BUILDERS: Record<AgentId, (ctx: Ctx) => Artifact> = {
   pr_review: reviewArtifact,
   merge: mergeArtifact,
   evals: evalsArtifact,
+  consensus: consensusArtifact,
   approval: approvalArtifact,
   pr: prArtifact,
 };
@@ -852,5 +1078,47 @@ export function runSpecialist(ctx: Ctx): Artifact {
   const builder = BUILDERS[ctx.step.agent];
   const artifact = builder(ctx);
   if (!artifact.title) artifact.title = AGENTS[ctx.step.agent].label;
-  return artifact;
+  artifact.stepId = ctx.step.id;
+  artifact.track = ctx.step.track;
+  const last = ctx.run.recovery?.events.at(-1)?.decision;
+  const issues = last?.evidence ?? ctx.run.verification?.cycles.at(-1)?.issues ?? [];
+  const reviewFixed = reviewRecovered(ctx.run);
+
+  if (ctx.step.agent === "tests" && compilationLoopIssues(ctx.run.analysis, testRecovered(ctx.run.recovery)).length > 0) {
+    const compile = compilationLoopIssues(ctx.run.analysis, false)[0];
+    artifact.title = "Tests failed: compilation";
+    artifact.summary = "The suite never reached assertions. Failure Classifier next — not the same test prompt.";
+    artifact.findings = [compile, ...artifact.findings];
+    artifact.sections = [
+      section("Failure", [compile.detail, "Compilation? → Developer. Test logic? → Developer. Environment? → Infrastructure. Dependency? → Dependency Agent. Unknown? → Investigation Agent."]),
+      ...artifact.sections,
+    ];
+    artifact.recommendation = "Failure Classifier: compilation → Developer Agent.";
+  }
+
+  if ((ctx.run.retries ?? 0) > 0 && ctx.step.agent === "implement" && issues.length > 0) {
+    artifact.title = artifact.title.startsWith("Fix:") ? artifact.title : `Fix: ${artifact.title}`;
+    artifact.sections = [
+      {
+        heading: last ? `Fix from ${last.kind.replaceAll("_", " ")}` : "Fix from review",
+        bullets: [
+          last ? `${last.cause} → ${last.target}` : "Address open review issues.",
+          ...issues.map((issue) => `Address: ${issue}`),
+        ],
+      },
+      ...artifact.sections,
+    ];
+  }
+  if ((ctx.run.retries ?? 0) > 0 && ctx.step.agent === "tests" && issues.length > 0) {
+    const heading = last?.kind === "test_failure" ? "Compilation regressions" : "Review regressions";
+    artifact.sections = [
+      ...artifact.sections,
+      { heading, bullets: issues.map((issue) => `Must stay green: ${issue}`) },
+    ];
+  }
+  if (ctx.step.agent === "pr_review" && reviewFixed) {
+    artifact.title = "Review passed after fix";
+    artifact.summary = "PR Reviewer re-read the diff after Developer addressed the open issues.";
+  }
+  return fulfillContract(ctx, artifact);
 }

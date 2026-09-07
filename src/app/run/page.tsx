@@ -2,22 +2,28 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { AgentContractCard } from "@/components/AgentContractCard";
 import { AgentGraph } from "@/components/AgentGraph";
-import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
 import { ApprovalGate } from "@/components/ApprovalGate";
 import { ArtifactList } from "@/components/ArtifactList";
 import { ControlCard } from "@/components/ControlCard";
+import { EngineeringPlannerCard } from "@/components/EngineeringPlannerCard";
 import { EvalGateCard } from "@/components/EvalGateCard";
+import { EvidenceEngineCard } from "@/components/EvidenceEngineCard";
 import { GuardrailsCard } from "@/components/GuardrailsCard";
 import { LearningsCard } from "@/components/LearningsCard";
 import { PlanView } from "@/components/PlanView";
-import { PlannerCard } from "@/components/PlannerCard";
 import { QualityReport } from "@/components/QualityReport";
+import { RepoAnalysisCard } from "@/components/RepoAnalysisCard";
 import { ResultMergerCard } from "@/components/ResultMergerCard";
 import { RiskEngineCard } from "@/components/RiskEngineCard";
 import { SharedStateCard } from "@/components/SharedStateCard";
 import { TaskAnalysisCard } from "@/components/TaskAnalysisCard";
+import { TaskPlannerCard } from "@/components/TaskPlannerCard";
+import { VerificationLoopCard } from "@/components/VerificationLoopCard";
+import { FailureRecoveryCard } from "@/components/FailureRecoveryCard";
+import { ConsensusCard } from "@/components/ConsensusCard";
 import { applyApproval } from "@/lib/orchestrate";
 import { compactGate } from "@/lib/quality";
 import { fetchLatest, loadRun, saveRun } from "@/lib/storage";
@@ -98,15 +104,37 @@ export default function RunPage() {
                 </button>
               </div>
               <TaskAnalysisCard analysis={run.analysis} />
-              {run.analysis.planner ? <PlannerCard planner={run.analysis.planner} /> : null}
+              {run.analysis.taskPlan ? <TaskPlannerCard plan={run.analysis.taskPlan} /> : null}
+              {run.plan.engineering ? <RepoAnalysisCard repo={run.plan.engineering.repository} /> : null}
               {run.analysis.riskEngine ? <RiskEngineCard engine={run.analysis.riskEngine} /> : null}
-              {run.analysis.route ? <AgentRouterCard route={run.analysis.route} /> : null}
+              {run.plan.engineering ? (
+                <EngineeringPlannerCard
+                  plan={run.plan.engineering}
+                  skipped={run.analysis.route?.skipped}
+                />
+              ) : null}
+              <AgentContractCard
+                live={run.artifacts.length > 0}
+                contracts={run.artifacts
+                  .map((item) => item.contract)
+                  .filter((item): item is NonNullable<typeof item> => Boolean(item))}
+              />
               {run.state ? <SharedStateCard state={run.state} live /> : null}
               <LearningsCard ticket={run.ticket} analysis={run.analysis} />
               {run.state ? <ResultMergerCard state={run.state} live /> : null}
+              {run.evidence ? <EvidenceEngineCard engine={run.evidence} live /> : null}
+              {run.verification ? <VerificationLoopCard loop={run.verification} live /> : null}
+              {run.recovery ? <FailureRecoveryCard recovery={run.recovery} live /> : null}
+              {run.consensus ? <ConsensusCard result={run.consensus} live /> : null}
               <GuardrailsCard ticket={run.ticket} analysis={run.analysis} plan={run.plan} />
               {run.quality ? <EvalGateCard gate={compactGate(run.quality)} live /> : null}
-              {run.plan.control ? <ControlCard control={run.plan.control} /> : null}
+              {run.plan.control ? (
+                <ControlCard
+                  control={run.plan.control}
+                  engineering={run.plan.engineering}
+                  decision={run.decision}
+                />
+              ) : null}
               <PlanView plan={run.plan} />
               <QualityReport report={run.quality} />
               <ApprovalGate run={run} onDecide={onDecide} />
@@ -120,7 +148,7 @@ export default function RunPage() {
                 <AgentGraph
                   plan={run.plan}
                   current={null}
-                  completed={run.artifacts.map((item) => item.agent)}
+                  completed={run.artifacts.map((item) => item.stepId ?? item.agent)}
                   running={false}
                 />
               </div>

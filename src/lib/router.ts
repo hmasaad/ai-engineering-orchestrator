@@ -1,3 +1,4 @@
+import { isEngineeringDecision } from "./consensus";
 import { AGENTS, PATTERN_LABEL } from "./roster";
 import { hasDataExfiltration, hasPerformanceIssue, policyFor, riskPolicyOf } from "./risk";
 import type {
@@ -241,6 +242,14 @@ export function routeTask(analysis: RouteInput): AgentRoute {
   }
 
   if (analysis.taskType === "architecture") {
+    if (isEngineeringDecision(ticketOf(analysis)) || shape === "decision") {
+      return makeRoute(
+        "architecture",
+        "High-risk decision. Architect, Performance, Security, and Developer debate. Consensus Engine, not a PR.",
+        ["architect", "performance", "security", "implement"],
+        analysis,
+      );
+    }
     return makeRoute(
       "architecture",
       "System design before anyone writes code. Dynamic IF-rules still apply.",

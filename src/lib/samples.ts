@@ -51,6 +51,8 @@ export const DB_FIELD_TICKET = "Add a column to the accounts table for nickname.
 export const PERFORMANCE_TICKET =
   "The settings screen list is slow to render with 10,000 rows. p95 latency is four seconds.";
 
+export const GRAPHQL_TICKET = "Should we migrate from REST to GraphQL?";
+
 export const SAMPLE_TICKETS: SampleTicket[] = [
   {
     id: "google-login",
@@ -59,6 +61,12 @@ export const SAMPLE_TICKETS: SampleTicket[] = [
     ticket: GOOGLE_LOGIN_TICKET,
     repository: "my-app",
     branch: "feature/google-login",
+  },
+  {
+    id: "flutter-google-login",
+    label: "Flutter Google login",
+    expected: "TASK-1024 · Flutter UI, auth, backend, database · Security before Implementation",
+    ticket: "Add Google login to the Flutter app.",
   },
   {
     id: "logout-auth",
@@ -113,7 +121,7 @@ export const SAMPLE_TICKETS: SampleTicket[] = [
   {
     id: "payment-debt",
     label: "Payment webhook debt",
-    expected: "Tech debt in Payments · security + human because of the area",
+    expected: "Tech debt in Payments · CRITICAL · security + human + rollback",
     ticket:
       "Pay down technical debt in the payment webhook handler. It is not idempotent and retries double-charge merchants.",
   },
@@ -140,6 +148,12 @@ export const SAMPLE_TICKETS: SampleTicket[] = [
     label: "Slow settings list",
     expected: "MEDIUM · IF performance issue → Performance Agent",
     ticket: PERFORMANCE_TICKET,
+  },
+  {
+    id: "graphql-migrate",
+    label: "REST to GraphQL",
+    expected: "HIGH decision · debate · DO NOT MIGRATE · no PR",
+    ticket: GRAPHQL_TICKET,
   },
   {
     id: "prompt-injection",

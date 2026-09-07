@@ -15,12 +15,12 @@ export function GuardrailsCard({
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        7. Guardrails
+        8. Guardrails
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">Attack language does not rewrite the plan</p>
       <p className="mt-2 text-sm text-ink-soft">
         Prompt injection, hijacking, tool abuse, unauthorized actions, exfiltration, malicious repo
-        files, and untrusted MCP tools are detected. The router does not obey them.
+        files, and untrusted MCP tools are detected. The control plane does not obey them.
       </p>
       <ul className="mt-4 space-y-1.5 text-sm text-ink-soft">
         {GUARDRAIL_POLICY.map((item) => (

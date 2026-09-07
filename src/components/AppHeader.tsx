@@ -21,7 +21,7 @@ export function AppHeader() {
             Engineering Orchestrator
           </span>
           <span className="hidden text-[11px] uppercase tracking-[0.18em] text-ink-soft sm:inline">
-            Who works, in what order
+            Control plane
           </span>
         </Link>
         <nav className="flex items-center gap-1 text-sm" suppressHydrationWarning>

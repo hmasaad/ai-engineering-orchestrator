@@ -1,8 +1,9 @@
-import { TASK_TYPE_LABEL } from "./roster";
+import { isEngineeringDecision } from "./consensus";
 import { detectControlKinds } from "./control";
-import { buildPlanner } from "./planner";
+import { buildPlanner, buildTaskPlan } from "./planner";
 import { scoreRisk } from "./risk";
 import { routeTask } from "./router";
+import { TASK_TYPE_LABEL } from "./roster";
 import type {
   AreaId,
   MissingQuestion,
@@ -97,6 +98,9 @@ const ARCH_HINTS = [
   "design the system",
   "system design",
   "migrate to",
+  "migrate from",
+  "should we",
+  "graphql",
   "microservices",
   "modular monolith",
   "scale to",
@@ -219,7 +223,17 @@ const SCHEMA_HINTS = [
   "last_login",
 ];
 
-const UI_HINTS = ["css", "ui", "button", "screen", "layout", "copy", "typo", "settings screen"];
+const UI_HINTS = [
+  "css",
+  "ui",
+  "button",
+  "screen",
+  "layout",
+  "copy",
+  "typo",
+  "settings screen",
+  "component",
+];
 
 const DOCS_HINTS = ["readme", "docs", "documentation", "comment", "typo"];
 
@@ -351,12 +365,7 @@ export function detectAreas(input: TaskInput | string): AreaId[] {
   if (any(corpus, SECURITY_HINTS) || identity || found.has("payments") || found.has("privacy")) {
     found.add("security");
   }
-  if (
-    any(corpus, BACKEND_HINTS) ||
-    identity ||
-    found.has("payments") ||
-    any(corpus, SOCIAL_HINTS)
-  ) {
+  if (any(corpus, BACKEND_HINTS) || any(corpus, ["graphql", "rest"]) || identity || found.has("payments") || any(corpus, SOCIAL_HINTS)) {
     found.add("backend");
   }
 
@@ -391,7 +400,8 @@ export function isVague(ticket: string): boolean {
     any(ticket, RESEARCH_HINTS) ||
     any(ticket, ARCH_HINTS) ||
     any(ticket, DEBT_HINTS) ||
-    any(ticket, INCIDENT_HINTS);
+    any(ticket, INCIDENT_HINTS) ||
+    isEngineeringDecision(ticket);
   const hasArea = detectArea(ticket) !== "Application";
   if (!hasType && !hasArea) return true;
   return false;
@@ -401,6 +411,7 @@ function detectType(ticket: string, vague: boolean, branch?: string): TaskType {
   if (vague) return "research";
   if (any(ticket, INCIDENT_HINTS)) return "incident";
   if (any(ticket, SECURITY_HINTS)) return "security";
+  if (isEngineeringDecision(ticket)) return "architecture";
   const researchOnly =
     any(ticket, RESEARCH_HINTS) &&
     !any(ticket, ["users are", "customers are", "fix the", "patch", "logged out", "crash"]);
@@ -496,7 +507,7 @@ export function understandTask(input: TaskInput | string): TaskAnalysis {
 
   const summary = vague
     ? "Ticket is too thin to dispatch a ship plan. Research the question, then a human decides."
-    : `${TASK_TYPE_LABEL[taskType]} in ${areas.map((id) => AREA_LABEL[id]).join(", ")}, ${risk} risk. Dispatch specialists instead of one model.`;
+    : `${TASK_TYPE_LABEL[taskType]} in ${areas.map((id) => AREA_LABEL[id]).join(", ")}, ${risk} risk. The control plane will plan the work instead of one model.`;
 
   const analysis: TaskAnalysis = {
     input: parsed,
@@ -515,6 +526,13 @@ export function understandTask(input: TaskInput | string): TaskAnalysis {
     missing: missingQuestions(text, vague, areas),
     controlKinds,
     planner,
+    taskPlan: buildTaskPlan({
+      ticket: text,
+      taskType,
+      areas,
+      agents: route.routing.agents,
+      vague,
+    }),
     riskEngine,
   };
   return analysis;

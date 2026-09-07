@@ -1,4 +1,5 @@
 import { hasAgent } from "../plan";
+import { isEngineeringDecision } from "../consensus";
 import { isDatabaseChange, isSecuritySensitive } from "../router";
 import { hasPerformanceIssue, riskPolicyOf } from "../risk";
 import type { AgentId, ExecutionPlan, PublicAgentName, QualityReport, TaskAnalysis } from "../types";
@@ -39,6 +40,7 @@ export const UNIT_COST: Record<AgentId, number> = {
   pr_review: 2,
   merge: 1,
   evals: 1,
+  consensus: 3,
   approval: 0,
   pr: 1,
 };
@@ -144,6 +146,10 @@ export function requiredTools(analysis: TaskAnalysis): EvalToolId[] {
     tools.push("merge", "evals", "pr");
     if (policy.require_tests) tools.push("tests");
     if (policy.require_review) tools.push("pr_review");
+  }
+  if (isEngineeringDecision(ticket)) {
+    if (!tools.includes("performance")) tools.push("performance");
+    if (!tools.includes("security")) tools.push("security");
   }
   if (policy.require_human || analysis.vague) tools.push("approval");
   return EVAL_TOOLS.filter((id) => tools.includes(id));

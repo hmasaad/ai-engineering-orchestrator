@@ -1,4 +1,10 @@
+import { compactContract } from "./contract";
+import { compactEvidence } from "./evidence";
+import { formatTaskPlanTree } from "./planner";
 import { AGENTS } from "./roster";
+import { compactVerification } from "./verification";
+import { compactRecovery } from "./recovery";
+import { compactConsensus } from "./consensus";
 import type { OrchestrationRun } from "./types";
 
 export function runToMarkdown(run: OrchestrationRun) {
@@ -13,9 +19,16 @@ export function runToMarkdown(run: OrchestrationRun) {
             `### ${section.heading}\n\n${section.bullets.map((item) => `- ${item}`).join("\n")}`,
         )
         .join("\n\n");
-      return `## ${AGENTS[artifact.agent].label}: ${artifact.title}\n\n${artifact.summary}\n\n${sections}\n\n*${artifact.recommendation}*`;
+      const contract = artifact.contract
+        ? `\n\n### Contract\n\n\`\`\`json\n${JSON.stringify(compactContract(artifact.contract), null, 2)}\n\`\`\``
+        : "";
+      return `## ${AGENTS[artifact.agent].label}: ${artifact.title}\n\n${artifact.summary}\n\n${sections}\n\n*${artifact.recommendation}*${contract}`;
     })
     .join("\n\n");
+
+  const taskPlan = run.analysis.taskPlan
+    ? `## Task plan\n\n\`\`\`\n${formatTaskPlanTree(run.analysis.taskPlan)}\n\`\`\`\n\n`
+    : "";
 
   return `# Engineering Orchestrator
 
@@ -31,18 +44,55 @@ export function runToMarkdown(run: OrchestrationRun) {
 
 ${run.analysis.summary}
 
-## Route
+${taskPlan}## Route
 
 - Pattern: ${run.analysis.route?.pattern ?? "—"}
 - Agents: ${run.analysis.route?.routing.agents.join(" → ") ?? run.analysis.requiredAgents.map((id) => AGENTS[id].label).join(" → ")}
+- Files: ${run.plan.engineering?.repository.files.join(", ") ?? "—"}
+- Tools: ${run.plan.engineering?.tools.join(", ") ?? "—"}
+- Human: ${run.plan.engineering?.humanApproval.required ? "yes" : "no"}
+- Success: ${run.plan.engineering?.success.map((item) => item.label).join("; ") ?? "—"}
+- Decision: ${run.decision ? `${run.decision.outcome} — ${run.decision.reason}` : "pending"}
 
-The router picks specialists for this ticket. It is not a fixed pipeline.
+The task planner is the work breakdown. Agent selection is one step in that plan, not the whole product.
 
 ## Shared state
 
 ${"```json\n" + JSON.stringify(run.state ?? {}, null, 2) + "\n```"}
 
-Agents read and write this blackboard. Empty objects mean that specialist has not run.
+Agents read and write this blackboard. Empty slices mean that specialist has not written yet.
+
+## Evidence engine
+
+${run.evidence
+  ? "```json\n" + JSON.stringify(compactEvidence(run.evidence), null, 2) + "\n```"
+  : "_No evidence report yet._"}
+
+A specialist claim is not proof. The Evidence Engine only treats files, tests, evals, integration, and security on the blackboard as system evidence.
+
+## Verification loop
+
+${run.verification
+  ? "```json\n" + JSON.stringify(compactVerification(run.verification), null, 2) + "\n```"
+  : "_No verification loop yet._"}
+
+Developer is not done when code is written. Tests → Code Review → Evals, then PASS or Fix and re-run. Security stays before Developer.
+
+## Failure recovery
+
+${run.recovery
+  ? "```json\n" + JSON.stringify(compactRecovery(run.recovery), null, 2) + "\n```"
+  : "_No failure recovery yet._"}
+
+Agents fail. The classifier names the kind and cause, then routes — compilation → Developer, environment → Infrastructure, unknown → Investigation. It does not retry the same prompt.
+
+## Agent debate / consensus
+
+${run.consensus
+  ? "```json\n" + JSON.stringify(compactConsensus(run.consensus), null, 2) + "\n```"
+  : "_No consensus yet._"}
+
+High-risk decisions do not trust one agent. Architect, Performance, Security, and Developer debate. Consensus Engine recommends. No PR.
 
 ## Execution plan
 

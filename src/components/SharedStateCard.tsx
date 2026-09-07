@@ -32,12 +32,13 @@ export function SharedStateCard({
     { key: "tests", filled: compact.tests.length > 0, label: "tests" },
     { key: "review", filled: isFilled(compact.review), label: "review" },
     { key: "merged", filled: isFilled(compact.merged), label: "merged" },
+    { key: "consensus", filled: isFilled(compact.consensus), label: "consensus" },
   ];
 
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        5. Shared agent state
+        6. Shared agent state
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">
         {live ? "Agents are writing to one blackboard" : "Empty until specialists run"}

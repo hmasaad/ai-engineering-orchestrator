@@ -1,11 +1,52 @@
-# AI Engineering Orchestrator
+# AI Engineering Control Plane
 
-A central agent that manages an engineering workflow by deciding **which specialist should handle each task**, **in what order**, and **when a human must sign off**.
+Given a software-engineering task, autonomously determine **what needs to happen**, **which agents and tools should act**, **enforce safety policies**, **validate every result**, **recover from failures**, and **produce an auditable engineering outcome**.
+
+It is not an agent that merely calls other agents. Agent selection is one step in the plan.
+
+```
+User Request
+     ↓
+Task Understanding
+     ↓
+Repository Analysis
+     ↓
+Risk Assessment
+     ↓
+Engineering Plan
+     ↓
+Dependency Graph
+     ↓
+Agent Selection
+     ↓
+Execution
+     ↓
+Validation
+     ↓
+Review
+     ↓
+Fix / Retry
+     ↓
+Final Decision
+```
+
+The plan answers:
+
+| Question | Where |
+|---|---|
+| What type of task is this? | Task Understanding |
+| What parts of the repository are affected? | Repository Analysis |
+| What agents are required? | Agent Selection (IF-rules) |
+| What tools are required? | Engineering Plan (`read_repo`, `edit_files`, `eval_suite`, … — never unsupervised shell) |
+| What dependencies exist? | Dependency graph — nodes, `dependsOn` edges, ASCII DAG |
+| What can run in parallel? | Same-wave tracks (Backend \|\| Mobile after Security). Sequential tickets stay a stem |
+| What requires human approval? | Risk Engine: HIGH/CRITICAL after the quality gate |
+| What constitutes success? | Evals PASS, scope held, guardrails held, never merge |
 
 It does not immediately ask one model to solve the ticket.
 
 ```
-                    Orchestrator
+                    Control Plane
                          │
                  ┌───────┴───────┐
                  ↓               ↓
@@ -13,7 +54,7 @@ It does not immediately ask one model to solve the ticket.
                  │               │
                  └───────┬───────┘
                          ↓
-                  Agent Router
+               Engineering Plan
                          │
           ┌──────────────┼──────────────┐
           ↓              ↓              ↓
@@ -23,23 +64,51 @@ It does not immediately ask one model to solve the ticket.
                          ↓
                     Result Merger
                          ↓
-                    Quality Gate
+                    Validation
                          ↓
-                 Human Approval
+                   Fix / Retry
+                         ↓
+                  Final Decision
                          ↓
                       Action
 ```
 
 The Risk Engine decides how heavy the rest of the pipeline is:
 
-| Change | Risk | What happens |
-|---|---|---|
-| Update button text | LOW | Automatic after the quality gate |
-| Add database field | MEDIUM | Tests + review |
-| Modify authentication | HIGH | Security review + human approval |
-| Production deployment | CRITICAL | Mandatory human approval |
+```
+                    Task
+                     ↓
+                Risk Engine
+                     ↓
+        ┌────────────┼────────────┐
+        ↓            ↓            ↓
+       LOW         MEDIUM        HIGH / CRITICAL
+        ↓            ↓            ↓
+   Auto Execute   Review      Human Approval
+```
 
-`POST /api/risk` returns the compact verdict (`level`, `action`, `require_tests`, `require_review`, `require_security`, `require_human`).
+| Change | Risk | Lane |
+|---|---|---|
+| Rename UI text | LOW | Auto Execute after the quality gate |
+| Add UI component | LOW | Auto Execute after the quality gate |
+| Add API endpoint | MEDIUM | Review (tests + PR Reviewer) |
+| Add database field | MEDIUM | Review (tests + PR Reviewer) |
+| Database migration | HIGH | Human Approval after evals |
+| Authentication changes | HIGH | Security Review, then a human |
+| Payment logic | CRITICAL | Mandatory human + rollback |
+| Production deployment | CRITICAL | Mandatory human + rollback |
+
+CRITICAL policy:
+
+```yaml
+critical:
+  require_human_approval: true
+  security_review: true
+  tests_required: true
+  rollback_required: true
+```
+
+`POST /api/risk` returns the compact verdict (`level`, `score`, `lane`, `require_human_approval`, `security_review`, `tests_required`, `rollback_required`).
 
 ```
                     ┌─────────────────────┐
@@ -67,7 +136,7 @@ The Risk Engine decides how heavy the rest of the pipeline is:
 
 ## Why this exists
 
-The PR Reviewer, Security Review, Bug Investigation, Technical Debt, Architect, Research, and Evals agents already do specialist work. The missing layer is the one that **chooses among them**.
+The PR Reviewer, Security Review, Bug Investigation, Technical Debt, Architect, Research, and Evals agents already do specialist work. The missing layer is the **control plane** that plans the work under policy, then selects among them.
 
 ## Offline first
 
@@ -103,9 +172,63 @@ The orchestrator determines:
 
 `POST /api/understand` returns that object. Repository and branch are signals (a `feature/` branch and an `*-app` repo change which areas light up).
 
-## 2. Agent Router
+## 2. Task planner
 
-The router is a small rule engine, not two hardcoded pipelines.
+This is a core control-plane component. It emits a work breakdown (`TASK-1024`), not a prompt route.
+
+For `Add Google login to the Flutter app.`:
+
+```
+TASK-1024
+
+Requirements
+ ├── Google authentication
+ ├── Existing user linking
+ ├── Logout
+ └── Error handling
+
+Affected areas
+ ├── Flutter UI
+ ├── Authentication service
+ ├── Backend
+ └── Database
+
+Agents
+ ├── Requirements Agent
+ ├── Software Architect
+ ├── Security Agent
+ ├── Developer
+ ├── Test Agent
+ └── PR Reviewer
+
+Dependencies
+
+Architecture
+     │
+     ↓
+  Security
+     │
+ ┌───┴────────┐
+ ↓            ↓
+Backend      Flutter
+ ↓            ↓
+Tests        Tests
+ └─────┬──────┘
+       ↓
+   Integration
+       ↓
+     Review
+```
+
+Security sits on the **stem before the fork**. A ticket cannot move it after Tests. Backend and Flutter (or iOS/Android) then run in the same wave. Database in affected areas is account linking, not a schema migration — the Database Agent is not dispatched.
+
+`POST /api/planner` returns `{ id, requirements, areas, agents, dependencies, parallel, graph }`.
+
+The same DAG drives execution. Independent tracks in one wave run together. Integration waits for both test tracks. A LOW UI ticket stays a single stem — no architecture/security parade, no fake fork.
+
+## 3. Engineering planner
+
+Agent selection is a rule engine inside the engineering plan, not two hardcoded pipelines.
 
 ```
 IF security-sensitive  → Security Agent
@@ -113,7 +236,201 @@ IF database change     → Database Agent
 IF performance issue   → Performance Agent
 ```
 
-Those specialists join **before Developer**. Testing and PR Reviewer still come from the Risk Engine (MEDIUM+). Evals, Action, and Human Approval are added later when the ticket actually ships.
+`POST /api/engineering` returns the compact control-plane plan (`type`, `areas`, `files`, `agents`, `tools`, `parallel`, `human`, `success`, `retry`). `POST /api/route` still returns `{ pattern, agents, rules }` so agent selection stays auditable.
+
+## Agent contract
+
+Agents do not return `"Done."` Every specialist takes a typed input and must emit a typed output.
+
+```
+INPUT
+ ↓
+Task
+Context
+Constraints
+Repository state
+
+OUTPUT
+ ↓
+Result
+Evidence
+Artifacts
+Risks
+Confidence
+Next actions
+```
+
+Compact shape:
+
+```json
+{
+  "status": "completed",
+  "confidence": 0.91,
+  "findings": [],
+  "files_changed": [],
+  "tests_added": [],
+  "risks": [],
+  "recommendations": [],
+  "evidence": [],
+  "next": []
+}
+```
+
+`runSpecialist` wraps every builder in that contract. The quality gate fails closed if a specialist omits it, or if the result is only `"Done."` Developer contracts must list `files_changed`. Testing contracts must list `tests_added`. Markdown export includes the compact JSON.
+
+## Evidence engine
+
+A specialist claiming “the bug is fixed” is not proof. The Evidence Engine requires:
+
+```
+Claim
+ ↓
+Evidence
+ ↓
+Validation
+```
+
+It distinguishes **agent says it works** from **system has evidence that it works**. System evidence is the blackboard plus the quality gate — files changed, tests added, eval suite, integration, security scan — never free-text sign-off.
+
+```json
+{
+  "claim": "Backend Google token verify · Mobile Google Sign-In SDK",
+  "agent_says": true,
+  "system_has_evidence": true,
+  "verdict": "supported",
+  "items": [
+    { "kind": "file_changed", "label": "Changed src/auth/google.ts", "held": true },
+    { "kind": "tests_added", "label": "Added 5 tests", "held": true },
+    { "kind": "tests_passed", "label": "184 tests passed", "held": true },
+    { "kind": "integration", "label": "Integration test passed", "held": true },
+    { "kind": "security_scan", "label": "Security scan passed", "held": true }
+  ]
+}
+```
+
+`POST /api/evidence` returns that compact report. The quality gate fails closed on an unbacked “bug is fixed” claim, or if shipping specialists ran without system evidence.
+
+## Verification loop
+
+Developer writing code is not completion. After Implementation:
+
+```
+Developer
+   ↓
+Tests
+   ↓
+Code Review
+   ↓
+Evals
+   ↓
+PASS?
+ ┌─┴─┐
+No  Yes
+↓    ↓
+Fix  Complete
+↓
+Re-run
+```
+
+Security Review stays **before** Developer. The loop does not move Security after Tests.
+
+When PR Reviewer finds issues:
+
+```
+PR Reviewer
+   ↓
+3 issues found
+   ↓
+Orchestrator
+   ↓
+Developer Agent
+   ↓
+Fix
+   ↓
+Tests
+   ↓
+PR Reviewer
+   ↓
+PASS
+```
+
+`POST /api/verification` returns `{ outcome, pass, attempts, trigger, issues, stages }`. The quality gate fails closed if review blockers are still open.
+
+## Failure recovery
+
+Agents fail. The orchestrator does not retry the same prompt.
+
+```
+Test Agent
+    ↓
+Tests failed
+    ↓
+Failure Classifier
+    ↓
+┌───────────────┐
+│ Compilation?  │ → Developer
+│ Test logic?   │ → Developer
+│ Environment?  │ → Infrastructure
+│ Dependency?   │ → Dependency Agent
+│ Unknown?      │ → Investigation Agent
+└───────────────┘
+```
+
+It also classifies tool failure, agent failure, timeout, invalid output, security failure, conflicting opinions, token limit, and dependency failure. Security failures hold for a human — they do **not** re-run Security after Tests.
+
+Example:
+
+```
+Testing Agent
+    ↓
+Compilation failed (TS2304)
+    ↓
+Failure Classifier → Developer
+    ↓
+Fix
+    ↓
+Tests
+    ↓
+PR Reviewer (invalid output) → Developer
+    ↓
+PASS
+```
+
+`POST /api/recovery` returns `{ outcome, kind, cause, target, events }`.
+
+## Agent debate / consensus
+
+For high-risk decisions, do not trust one agent.
+
+Example: `"Should we migrate from REST to GraphQL?"`
+
+```
+Architect Agent
+      ↓
+Performance Agent
+      ↓
+Security Agent
+      ↓
+Developer Agent
+      ↓
+Consensus Engine
+      ↓
+Recommendation
+```
+
+The orchestrator produces a recommendation, not a PR:
+
+```
+Decision: DO NOT MIGRATE
+Confidence: 87%
+
+Architect: Potential architectural benefits
+Performance: No measurable benefit
+Security: Additional attack surface
+Developer: Migration cost estimated at 3–4 weeks
+```
+
+`POST /api/consensus` returns `{ decision, confidence, recommendation, voices }`. A person still accepts the recommendation. Security stays before Developer.
 
 Google social login fires only the security IF:
 
@@ -310,12 +627,12 @@ A ticket like:
 is not a prompt for a single LLM. It is:
 
 1. **Understand** — type, risk, areas
-2. **Route** — which specialists, not a fixed pipeline
-3. **Share** — one blackboard every agent reads and writes
-4. **Control** — humans approve the plan and the ship
-5. **Dispatch** — specialists write artifacts into shared state, pausing at gates
-6. **Gate** — evals fail closed if the plan cheated
-7. **Stop** — nothing merges itself
+2. **Analyze** — which repository paths are in blast radius
+3. **Plan** — agents, tools, dependencies, parallel waves, success
+4. **Select** — IF-rules add Security / Database / Performance when they match
+5. **Execute** — specialists write one blackboard
+6. **Validate** — evals fail closed
+7. **Retry or decide** — one Developer retry if guardrails held; Action is a PR, never a merge
 
 ## Run
 
@@ -338,6 +655,7 @@ Open [http://localhost:3000/evals](http://localhost:3000/evals). Gold tickets mu
 | Settings button color | LOW — automatic after the quality gate |
 | Add database field | MEDIUM — Database Agent, tests + review, no human |
 | Slow settings list | MEDIUM — Performance Agent, tests + review, no human |
+| REST to GraphQL | HIGH decision — debate, DO NOT MIGRATE, no PR |
 | Logout after upgrade | Bug, high, auth, security before fix, human gate |
 | New booking reminder | MEDIUM feature — Architect, tests, review, no security parade |
 | Login rate limit | HIGH — Security before patch, human approval |

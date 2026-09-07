@@ -1,10 +1,11 @@
-import { asTaskInput, hasArea, understandTask } from "./classify";
+import { asTaskInput, understandTask } from "./classify";
 import { compactMerge } from "./merge";
 import { packLearnings, retrieveLearnings } from "./rag";
-import { isSimpleUi } from "./router";
+import { filesForTrack } from "./repo";
 import type {
   AgentId,
   Artifact,
+  ConsensusResult,
   RunStatus,
   SharedAgentState,
   SharedArchitecture,
@@ -34,6 +35,7 @@ export function initSharedState(task: string, status: RunStatus = "planned"): Sh
     performance: {},
     learnings: {},
     merged: {},
+    consensus: {},
     status,
   };
 }
@@ -51,6 +53,7 @@ export function compactState(state: SharedAgentState): SharedAgentState {
     performance: state.performance ?? {},
     learnings: state.learnings ?? {},
     merged: state.merged,
+    consensus: state.consensus ?? {},
     status: state.status,
   };
 }
@@ -58,37 +61,6 @@ export function compactState(state: SharedAgentState): SharedAgentState {
 function bullets(artifact: Artifact, heading: string): string[] {
   return artifact.sections.find((section) => section.heading.toLowerCase() === heading.toLowerCase())
     ?.bullets ?? [];
-}
-
-function filesFor(analysis: TaskAnalysis, task: string): string[] {
-  if (hasArea(analysis, "authentication") && analysis.taskType === "feature") {
-    return [
-      "src/auth/google.ts",
-      "src/api/auth/google.ts",
-      "ios/Auth/GoogleSignIn.swift",
-      "android/auth/GoogleSignIn.kt",
-    ];
-  }
-  if (hasArea(analysis, "authentication") && analysis.taskType === "bug") {
-    return ["src/auth/refresh.ts", "src/auth/session.ts", "src/auth/upgrade-migration.ts"];
-  }
-  if (analysis.planner?.shape === "performance") {
-    return ["src/screens/SettingsList.tsx", "src/screens/virtualize.ts"];
-  }
-  if (isSimpleUi(analysis) || hasArea(analysis, "ui")) {
-    return ["src/screens/Settings.tsx", "src/screens/Settings.css"];
-  }
-  if (hasArea(analysis, "payments")) {
-    return ["src/payments/webhook.ts", "src/payments/idempotency.ts"];
-  }
-  if (hasArea(analysis, "booking")) {
-    return ["src/booking/reminders.ts", "src/notify/appointment.ts"];
-  }
-  if (analysis.planner?.shape === "schema" || analysis.controlKinds.includes("schema_change")) {
-    return ["src/db/migrations/add_field.sql", "src/models/account.ts"];
-  }
-  const slug = task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
-  return [`src/${analysis.areas[0] ?? "app"}/${slug || "change"}.ts`];
 }
 
 function asRequirements(artifact: Artifact): SharedRequirements {
@@ -183,10 +155,12 @@ export function writeSharedState(
       };
       break;
     case "implement":
-      next.files_changed = filesFor(analysis, state.task);
+      if (analysis.asksForChange) {
+        next.files_changed = [...new Set([...next.files_changed, ...filesForTrack(analysis, artifact.track)])];
+      }
       break;
     case "tests":
-      next.tests = asTests(artifact);
+      next.tests = [...new Set([...next.tests, ...asTests(artifact)])];
       break;
     case "pr_review":
       next.review = asReview(artifact);
@@ -194,6 +168,38 @@ export function writeSharedState(
     case "merge":
       next.merged = compactMerge(next);
       break;
+    case "consensus": {
+      const decision = artifact.title.replace(/^Decision:\s*/i, "").trim();
+      const confidence = Number((/(\d+)%/.exec(artifact.summary)?.[1] ?? "0"));
+      const voices = (artifact.sections.find((section) => section.heading === "Voices")?.bullets ?? []).map(
+        (line) => {
+          const split = line.indexOf(":");
+          const label = split >= 0 ? line.slice(0, split).trim() : line;
+          const summary = split >= 0 ? line.slice(split + 1).trim() : line;
+          return {
+            agent: "architect" as const,
+            label,
+            stance: "mixed" as const,
+            summary,
+            confidence: 0,
+          };
+        },
+      );
+      const nextConsensus: ConsensusResult = {
+        question: analysis.input.task.trim(),
+        decision,
+        recommendation: /do not migrate/i.test(decision)
+          ? "do_not_migrate"
+          : /^migrate$/i.test(decision)
+            ? "migrate"
+            : "hold",
+        confidence,
+        voices,
+        rationale: artifact.sections.find((section) => section.heading === "Rationale")?.bullets ?? [],
+      };
+      next.consensus = nextConsensus;
+      break;
+    }
     default:
       break;
   }

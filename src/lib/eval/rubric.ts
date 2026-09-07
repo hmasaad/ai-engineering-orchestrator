@@ -1,4 +1,4 @@
-import type { AgentId, ExecutionPlan, SharedAgentState, TaskAnalysis } from "../types";
+import type { AgentId, Artifact, ConsensusResult, ExecutionPlan, FailureRecovery, SharedAgentState, TaskAnalysis, VerificationLoop } from "../types";
 import { AGENTS } from "../roster";
 import { evaluatePlan } from "../quality";
 import { comesBefore, hasAgent } from "../plan";
@@ -20,6 +20,11 @@ export type ScoreContext = {
   plan: ExecutionPlan;
   hay: string;
   state?: SharedAgentState;
+  artifacts?: Artifact[];
+  retries?: number;
+  verification?: VerificationLoop;
+  recovery?: FailureRecovery;
+  consensus?: ConsensusResult;
 };
 
 export type ScenarioAssertion = {

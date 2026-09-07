@@ -1,10 +1,16 @@
 import { comesBefore, gateBefore, hasAgent, hasGate } from "./plan";
 import { hasArea } from "./classify";
+import { isEngineeringDecision } from "./consensus";
+import { contractHeld } from "./contract";
+import { buildEvidenceEngine, evidenceHeld, isBareSuccessClaim } from "./evidence";
 import { detectGuardrails, GUARDRAIL_CATALOG, heldFor } from "./guardrails";
 import { isDatabaseChange, isSecuritySensitive, isSimpleUi } from "./router";
 import { hasPerformanceIssue, riskPolicyOf } from "./risk";
 import { isFilled } from "./state";
+import { reviewBlockers } from "./verification";
+import { testFailureArtifacts } from "./recovery";
 import type {
+  Artifact,
   EvalDimensionId,
   ExecutionPlan,
   QualityCheck,
@@ -27,7 +33,10 @@ export type EvaluableRun = {
   ticket?: string;
   analysis: TaskAnalysis;
   plan: ExecutionPlan;
-  artifacts?: { agent: string; sections?: { heading: string }[] }[];
+  artifacts?: Pick<
+    Artifact,
+    "agent" | "title" | "summary" | "recommendation" | "sections" | "contract" | "evidence" | "findings"
+  >[];
   state?: SharedAgentState;
   status?: string;
 };
@@ -119,7 +128,11 @@ function guardrailChecks(analysis: TaskAnalysis, plan: ExecutionPlan, ticket: st
 export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket = ""): QualityReport {
   const text = ticket.toLowerCase();
   const agents = plan.steps.map((step) => step.agent);
-  const ship = hasAgent(plan, "implement") || hasAgent(plan, "pr");
+  const specialistKeys = plan.steps
+    .filter((step) => step.agent !== "approval")
+    .map((step) => (step.track ? `${step.agent}:${step.track}` : step.agent));
+  const uniqueSpecialists = new Set(specialistKeys).size === specialistKeys.length;
+  const ship = analysis.asksForChange && (hasAgent(plan, "implement") || hasAgent(plan, "pr"));
   const auth = hasArea(analysis, "authentication");
   const policy = riskPolicyOf(analysis);
   const high = policy.require_human;
@@ -137,13 +150,11 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
     check(
       "no-duplicate-agents",
       "code_quality",
-      "Each specialist appears once",
-      new Set(agents.filter((id) => id !== "approval")).size ===
-        agents.filter((id) => id !== "approval").length,
-      new Set(agents.filter((id) => id !== "approval")).size ===
-        agents.filter((id) => id !== "approval").length
-        ? "No repeated specialists. Approval gates may appear twice."
-        : "The same specialist was scheduled twice.",
+      "Each specialist appears once per track",
+      uniqueSpecialists,
+      uniqueSpecialists
+        ? "Parallel tracks may share an agent. The same specialist is not repeated on one track."
+        : "The same specialist was scheduled twice on the same track.",
     ),
     check(
       "research-before-change",
@@ -155,8 +166,10 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
         analysis.planner?.shape === "performance" ||
         analysis.planner?.shape === "deploy" ||
         analysis.planner?.shape === "ui-patch" ||
+        analysis.planner?.shape === "decision" ||
         comesBefore(plan, "research", "implement") ||
         comesBefore(plan, "requirements", "implement") ||
+        comesBefore(plan, "architect", "implement") ||
         comesBefore(plan, "database", "implement") ||
         comesBefore(plan, "performance", "implement") ||
         hasAgent(plan, "bug"),
@@ -166,8 +179,10 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
         analysis.planner?.shape !== "performance" &&
         analysis.planner?.shape !== "deploy" &&
         analysis.planner?.shape !== "ui-patch" &&
+        analysis.planner?.shape !== "decision" &&
         !hasAgent(plan, "research") &&
         !hasAgent(plan, "requirements") &&
+        !hasAgent(plan, "architect") &&
         !hasAgent(plan, "bug")
         ? "Developer Agent ran without Requirements, Research, or Bug Investigation."
         : "Evidence is gathered before a patch, unless the ticket is a simple UI change.",
@@ -363,6 +378,21 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
         : "Thin tickets stop for clarification.",
     ),
     check(
+      "decision-consensus",
+      "architecture",
+      "High-risk decisions go through Consensus Engine",
+      !isEngineeringDecision(ticket) ||
+        (hasAgent(plan, "consensus") &&
+          hasAgent(plan, "architect") &&
+          hasAgent(plan, "performance") &&
+          hasAgent(plan, "security") &&
+          hasAgent(plan, "implement") &&
+          !hasAgent(plan, "pr")),
+      isEngineeringDecision(ticket) && !hasAgent(plan, "consensus")
+        ? "A high-risk decision trusted one agent instead of a debate."
+        : "Architect, Performance, Security, and Developer debate. Consensus, not a PR.",
+    ),
+    check(
       "low-risk-not-overrouted",
       "architecture",
       "Low-risk cleanup is not a full security+architect parade",
@@ -394,6 +424,115 @@ export function evaluateRun(run: EvaluableRun): QualityReport {
   if (!run.artifacts || run.artifacts.length === 0) return base;
 
   const extra: QualityCheck[] = [];
+  const missingContract = run.artifacts.filter((item) => !contractHeld(item));
+  extra.push(
+    check(
+      "agent-contract",
+      "code_quality",
+      "Every specialist returns a contract",
+      missingContract.length === 0,
+      missingContract.length === 0
+        ? "Each agent reported status, evidence, confidence, and next actions."
+        : `${missingContract.map((item) => item.agent).join(", ")} returned Done or omitted a contract.`,
+    ),
+  );
+  const implement = run.artifacts.filter((item) => item.agent === "implement");
+  const implementOk =
+    !run.analysis.asksForChange ||
+    implement.length === 0 ||
+    implement.every((item) => (item.contract?.output.files_changed.length ?? 0) > 0);
+  extra.push(
+    check(
+      "implement-contract-files",
+      "correctness",
+      "Developer contract lists files_changed",
+      implementOk,
+      run.analysis.asksForChange && implement.length === 0
+        ? "No Developer Agent on this run."
+        : !run.analysis.asksForChange
+          ? "Developer gave an opinion, not a patch."
+          : implementOk
+            ? "Implementation contracts name the files they touched."
+            : "A Developer Agent contract had an empty files_changed list.",
+      run.analysis.asksForChange && implement.length ? "error" : "warning",
+    ),
+  );
+  const tests = run.artifacts.filter((item) => item.agent === "tests");
+  const testsOk =
+    tests.length === 0 || tests.every((item) => (item.contract?.output.tests_added.length ?? 0) > 0);
+  extra.push(
+    check(
+      "tests-contract-cases",
+      "tests",
+      "Testing contract lists tests_added",
+      testsOk,
+      tests.length === 0
+        ? "No Testing Agent on this run."
+        : testsOk
+          ? "Testing contracts name the cases they added."
+          : "A Testing Agent contract had an empty tests_added list.",
+      tests.length ? "error" : "warning",
+    ),
+  );
+  const openReview = reviewBlockers(run.artifacts);
+  extra.push(
+    check(
+      "review-open-issues",
+      "code_quality",
+      "PR Reviewer blockers are closed before evals",
+      openReview.length === 0,
+      openReview.length === 0
+        ? "No open review blockers."
+        : `PR Reviewer found ${openReview.length} issues. Orchestrator must fix and re-run.`,
+    ),
+  );
+  const openTests = testFailureArtifacts(run.artifacts);
+  extra.push(
+    check(
+      "test-failures-classified",
+      "tests",
+      "Open test failures are classified, not re-prompted",
+      openTests.length === 0,
+      openTests.length === 0
+        ? "No open test failures."
+        : "Tests failed. Failure Classifier must route the cause before evals.",
+    ),
+  );
+  const engine = buildEvidenceEngine(run);
+  const shipping = run.analysis.asksForChange
+    ? run.artifacts.filter((item) =>
+        ["implement", "tests", "merge", "evals", "pr_review", "pr"].includes(item.agent),
+      )
+    : [];
+  if (shipping.length > 0) {
+    extra.push(
+      check(
+        "evidence-engine",
+        "correctness",
+        "System evidence backs shipping claims",
+        evidenceHeld(engine),
+        evidenceHeld(engine)
+          ? "The Evidence Engine distinguished agent claims from system proof."
+          : "An agent claimed success without files, tests, evals, or a security scan on the blackboard.",
+      ),
+    );
+    const bare = shipping.filter(
+      (item) =>
+        (isBareSuccessClaim(item.summary) || isBareSuccessClaim(item.title)) &&
+        !(item.evidence?.system_has_evidence ?? false),
+    );
+    extra.push(
+      check(
+        "no-bare-claim",
+        "correctness",
+        "No unbacked “bug is fixed” claim",
+        bare.length === 0,
+        bare.length === 0
+          ? "No specialist claimed a fix without system evidence."
+          : `${bare.map((item) => item.agent).join(", ")} claimed a fix without evidence.`,
+      ),
+    );
+  }
   const ranEvals = run.artifacts.some((item) => item.agent === "evals");
   const expectsEvals = run.plan.steps.some((step) => step.agent === "evals");
   if (expectsEvals && (ranEvals || run.status === "complete")) {
@@ -488,11 +627,22 @@ export function evaluateRun(run: EvaluableRun): QualityReport {
     );
     extra.push(
       check(
+        "consensus-in-state",
+        "architecture",
+        "Consensus Engine writes the recommendation",
+        !agents.has("consensus") || isFilled(state.consensus),
+        agents.has("consensus") && !isFilled(state.consensus)
+          ? "Consensus ran but shared state.consensus is still empty."
+          : "The recommendation landed in shared state.",
+      ),
+    );
+    extra.push(
+      check(
         "files-in-state",
         "correctness",
         "Developer writes files_changed",
-        !agents.has("implement") || state.files_changed.length > 0,
-        agents.has("implement") && state.files_changed.length === 0
+        !run.analysis.asksForChange || !agents.has("implement") || state.files_changed.length > 0,
+        run.analysis.asksForChange && agents.has("implement") && state.files_changed.length === 0
           ? "Developer ran but files_changed is empty."
           : "The diff list is on the blackboard.",
       ),
