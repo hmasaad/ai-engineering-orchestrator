@@ -1,8 +1,8 @@
 import { comesBefore, gateBefore, hasAgent, hasGate } from "./plan";
 import { hasArea } from "./classify";
-import { detectGuardrails, heldTheLine } from "./guardrails";
-import { isSimpleUi } from "./router";
-import { riskPolicyOf } from "./risk";
+import { detectGuardrails, GUARDRAIL_CATALOG, heldFor } from "./guardrails";
+import { isDatabaseChange, isSecuritySensitive, isSimpleUi } from "./router";
+import { hasPerformanceIssue, riskPolicyOf } from "./risk";
 import { isFilled } from "./state";
 import type {
   EvalDimensionId,
@@ -78,11 +78,9 @@ export function finalizeReport(checks: QualityCheck[]): QualityReport {
     warningCount: warnings.length,
     checks,
     dimensions,
-    guardrails: {
-      prompt_injection: guardrailStatus(checks, "prompt-injection"),
-      rag_poisoning: guardrailStatus(checks, "rag-poisoning"),
-      agent_hijacking: guardrailStatus(checks, "agent-hijacking"),
-    },
+    guardrails: Object.fromEntries(
+      GUARDRAIL_CATALOG.map((item) => [item.id, guardrailStatus(checks, item.id.replaceAll("_", "-"))]),
+    ) as QualityGate["guardrails"],
   };
 }
 
@@ -100,43 +98,22 @@ export function compactGate(report: QualityReport): QualityGate {
 
 function guardrailChecks(analysis: TaskAnalysis, plan: ExecutionPlan, ticket: string): QualityCheck[] {
   const hits = detectGuardrails(ticket);
-  const held = heldTheLine(analysis, plan);
 
-  return [
-    check(
-      "prompt-injection",
+  return GUARDRAIL_CATALOG.map((item) => {
+    const held = heldFor(item.id, analysis, plan);
+    const hit = hits[item.id];
+    return check(
+      item.id.replaceAll("_", "-"),
       "security",
-      "Prompt injection did not change the route",
-      !hits.promptInjection || held,
-      hits.promptInjection
+      `${item.label} did not rewrite the plan`,
+      !hit || held,
+      hit
         ? held
-          ? "The ticket tried to skip Security or the orchestrator. Routing did not obey."
-          : "Prompt injection changed the route or dropped a required gate."
-        : "No prompt-injection language in the ticket.",
-    ),
-    check(
-      "rag-poisoning",
-      "security",
-      "Retrieved context did not skip human approval",
-      !hits.ragPoisoning || held,
-      hits.ragPoisoning
-        ? held
-          ? "Poisoned 'docs' asked to skip a human. The plan still gated."
-          : "RAG poisoning language caused the plan to skip a required control."
-        : "No RAG-poisoning language in the ticket.",
-    ),
-    check(
-      "agent-hijacking",
-      "security",
-      "The ticket did not collapse the roster to one agent",
-      !hits.agentHijacking || held,
-      hits.agentHijacking
-        ? held
-          ? "The ticket tried to hijack the Developer Agent. Specialists and gates still ran."
-          : "Agent hijacking collapsed the plan to an unsupervised ship."
-        : "No agent-hijacking language in the ticket.",
-    ),
-  ];
+          ? `The ticket tried ${item.label.toLowerCase()}. Routing and gates did not obey.`
+          : `${item.label} changed the route or dropped a required control.`
+        : `No ${item.label.toLowerCase()} language in the ticket.`,
+    );
+  });
 }
 
 export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket = ""): QualityReport {
@@ -175,14 +152,18 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
       !hasAgent(plan, "implement") ||
         isSimpleUi(analysis) ||
         analysis.planner?.shape === "schema" ||
+        analysis.planner?.shape === "performance" ||
         analysis.planner?.shape === "deploy" ||
         analysis.planner?.shape === "ui-patch" ||
         comesBefore(plan, "research", "implement") ||
         comesBefore(plan, "requirements", "implement") ||
+        comesBefore(plan, "database", "implement") ||
+        comesBefore(plan, "performance", "implement") ||
         hasAgent(plan, "bug"),
       hasAgent(plan, "implement") &&
         !isSimpleUi(analysis) &&
         analysis.planner?.shape !== "schema" &&
+        analysis.planner?.shape !== "performance" &&
         analysis.planner?.shape !== "deploy" &&
         analysis.planner?.shape !== "ui-patch" &&
         !hasAgent(plan, "research") &&
@@ -199,6 +180,39 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
       auth && ship && !hasAgent(plan, "security")
         ? "Authentication work shipped without Security Review."
         : "Security sits in front of the patch when auth is involved.",
+    ),
+    check(
+      "if-security-sensitive",
+      "security",
+      "IF security-sensitive → Security Agent",
+      !ship ||
+        !isSecuritySensitive({ ...analysis, ticket }) ||
+        (hasAgent(plan, "security") && comesBefore(plan, "security", "implement")),
+      isSecuritySensitive({ ...analysis, ticket }) && ship && !hasAgent(plan, "security")
+        ? "A security-sensitive ticket skipped the Security Agent."
+        : "Security is dispatched only when the IF matches.",
+    ),
+    check(
+      "if-database-change",
+      "architecture",
+      "IF database change → Database Agent",
+      !ship ||
+        !isDatabaseChange({ ...analysis, ticket }) ||
+        (hasAgent(plan, "database") && comesBefore(plan, "database", "implement")),
+      isDatabaseChange({ ...analysis, ticket }) && ship && !hasAgent(plan, "database")
+        ? "A database change skipped the Database Agent."
+        : "Database is dispatched only when the IF matches.",
+    ),
+    check(
+      "if-performance-issue",
+      "regression",
+      "IF performance issue → Performance Agent",
+      !ship ||
+        !hasPerformanceIssue(ticket) ||
+        (hasAgent(plan, "performance") && comesBefore(plan, "performance", "implement")),
+      hasPerformanceIssue(ticket) && ship && !hasAgent(plan, "performance")
+        ? "A performance issue skipped the Performance Agent."
+        : "Performance is dispatched only when the IF matches.",
     ),
     check(
       "evals-before-pr",
@@ -307,12 +321,14 @@ export function evaluatePlan(analysis: TaskAnalysis, plan: ExecutionPlan, ticket
         analysis.vague ||
         isSimpleUi(analysis) ||
         analysis.planner?.shape === "schema" ||
+        analysis.planner?.shape === "performance" ||
         analysis.planner?.shape === "deploy" ||
         analysis.planner?.shape === "ui-patch" ||
         hasAgent(plan, "architect"),
       analysis.taskType === "feature" &&
         !isSimpleUi(analysis) &&
         analysis.planner?.shape !== "schema" &&
+        analysis.planner?.shape !== "performance" &&
         analysis.planner?.shape !== "deploy" &&
         !hasAgent(plan, "architect")
         ? "A feature skipped the Architect Agent."
@@ -446,6 +462,28 @@ export function evaluateRun(run: EvaluableRun): QualityReport {
         agents.has("security") && state.security_findings.length === 0
           ? "Security ran but shared no findings."
           : "Later agents can read security_findings.",
+      ),
+    );
+    extra.push(
+      check(
+        "database-in-state",
+        "architecture",
+        "Database Agent writes shared notes",
+        !agents.has("database") || isFilled(state.database),
+        agents.has("database") && !isFilled(state.database)
+          ? "Database ran but shared state.database is still empty."
+          : "Schema notes landed in shared state.",
+      ),
+    );
+    extra.push(
+      check(
+        "performance-in-state",
+        "regression",
+        "Performance Agent writes shared notes",
+        !agents.has("performance") || isFilled(state.performance),
+        agents.has("performance") && !isFilled(state.performance)
+          ? "Performance ran but shared state.performance is still empty."
+          : "Performance notes landed in shared state.",
       ),
     );
     extra.push(

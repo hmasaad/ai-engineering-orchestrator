@@ -6,7 +6,7 @@ export function ControlCard({ control }: { control: ControlPolicy }) {
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        8. Human approval / action
+        9. Human approval / action
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">
         {control.autonomous ? "Action is automatic after the gate" : "Human, then Action"}

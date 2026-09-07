@@ -58,6 +58,20 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     role: "Threat-model the change before a fix is generated.",
     origin: "Security Review agent — auth, secrets, and abuse cases.",
   },
+  database: {
+    id: "database",
+    label: "Database Agent",
+    short: "Database",
+    role: "Review schema, migrations, and data compatibility before Developer writes SQL.",
+    origin: "Database specialist — additive fields vs destructive drops.",
+  },
+  performance: {
+    id: "performance",
+    label: "Performance Agent",
+    short: "Performance",
+    role: "Find the cost (query, render, latency) before anyone patches a slow path.",
+    origin: "Performance specialist — p95, N+1, and hot lists.",
+  },
   implement: {
     id: "implement",
     label: "Developer Agent",
@@ -128,6 +142,8 @@ export const AGENT_ORDER: AgentId[] = [
   "architect",
   "tech_debt",
   "security",
+  "database",
+  "performance",
   "implement",
   "tests",
   "pr_review",
@@ -149,6 +165,7 @@ export const PATTERN_LABEL: Record<RoutePattern, string> = {
   debt: "Technical debt",
   architecture: "Architecture",
   vague: "Needs clarification",
+  performance: "Performance issue",
 };
 
 export function agentLabel(id: AgentId) {

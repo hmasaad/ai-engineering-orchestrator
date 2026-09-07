@@ -19,10 +19,15 @@ export function SharedStateCard({
     { key: "requirements", filled: isFilled(compact.requirements), label: "requirements" },
     { key: "architecture", filled: isFilled(compact.architecture), label: "architecture" },
     { key: "files_changed", filled: compact.files_changed.length > 0, label: "files_changed" },
+    { key: "security_findings", filled: compact.security_findings.length > 0, label: "security_findings" },
+    { key: "database", filled: isFilled(compact.database), label: "database" },
+    { key: "performance", filled: isFilled(compact.performance), label: "performance" },
     {
-      key: "security_findings",
-      filled: compact.security_findings.length > 0,
-      label: "security_findings",
+      key: "learnings",
+      filled: Boolean(
+        compact.learnings && "hits" in compact.learnings && compact.learnings.hits.length > 0,
+      ),
+      label: "learnings",
     },
     { key: "tests", filled: compact.tests.length > 0, label: "tests" },
     { key: "review", filled: isFilled(compact.review), label: "review" },

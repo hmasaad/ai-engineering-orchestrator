@@ -9,6 +9,8 @@ import { ApprovalGate } from "@/components/ApprovalGate";
 import { ArtifactList } from "@/components/ArtifactList";
 import { ControlCard } from "@/components/ControlCard";
 import { EvalGateCard } from "@/components/EvalGateCard";
+import { GuardrailsCard } from "@/components/GuardrailsCard";
+import { LearningsCard } from "@/components/LearningsCard";
 import { PlanView } from "@/components/PlanView";
 import { PlannerCard } from "@/components/PlannerCard";
 import { QualityReport } from "@/components/QualityReport";
@@ -100,7 +102,9 @@ export default function RunPage() {
               {run.analysis.riskEngine ? <RiskEngineCard engine={run.analysis.riskEngine} /> : null}
               {run.analysis.route ? <AgentRouterCard route={run.analysis.route} /> : null}
               {run.state ? <SharedStateCard state={run.state} live /> : null}
+              <LearningsCard ticket={run.ticket} analysis={run.analysis} />
               {run.state ? <ResultMergerCard state={run.state} live /> : null}
+              <GuardrailsCard ticket={run.ticket} analysis={run.analysis} plan={run.plan} />
               {run.quality ? <EvalGateCard gate={compactGate(run.quality)} live /> : null}
               {run.plan.control ? <ControlCard control={run.plan.control} /> : null}
               <PlanView plan={run.plan} />

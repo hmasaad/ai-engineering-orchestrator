@@ -1,5 +1,6 @@
-import type { QualityReport as Report } from "@/lib/types";
 import { EVAL_DIMENSIONS } from "@/lib/quality";
+import { GUARDRAIL_CATALOG } from "@/lib/guardrails";
+import type { QualityReport as Report } from "@/lib/types";
 
 export function QualityReport({ report }: { report: Report }) {
   const passed = report.verdict ? report.verdict === "PASS" : report.ready;
@@ -28,6 +29,23 @@ export function QualityReport({ report }: { report: Report }) {
                 }`}
               >
                 {dim.label} · {row?.score ?? 0}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+      {report.guardrails ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {GUARDRAIL_CATALOG.map((item) => {
+            const ok = report.guardrails[item.id] === "pass";
+            return (
+              <span
+                key={item.id}
+                className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${
+                  ok ? "border-navy bg-navy text-paper" : "border-stamp bg-stamp/15 text-stamp"
+                }`}
+              >
+                {item.label}
               </span>
             );
           })}

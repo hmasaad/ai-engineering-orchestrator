@@ -7,3 +7,4 @@ out
 *.log
 .vercel
 data/latest.json
+data/learnings.json

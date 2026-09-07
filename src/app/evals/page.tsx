@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppHeader } from "@/components/AppHeader";
+import { EvalMetricsBoard } from "@/components/EvalMetricsBoard";
 import { RUBRIC_DIMENSIONS } from "@/lib/eval/rubric";
+import type { SuiteMetrics } from "@/lib/eval/metrics";
 
 type Assertion = {
   id: string;
@@ -53,6 +55,7 @@ type Suite = {
   passed: boolean;
   samples: { id: string; ok: boolean; score: number; ready: boolean; errors: string[] }[];
   scenarios: ScenarioResult[];
+  metrics: SuiteMetrics;
 };
 
 function Bar({ value, tone }: { value: number; tone: "gold" | "attack" | "neutral" }) {
@@ -87,9 +90,9 @@ export default function EvalsPage() {
         </p>
         <h1 className="mt-2 font-serif text-4xl text-navy">Orchestrator evals</h1>
         <p className="mt-4 max-w-2xl text-ink-soft">
-          This is not another prompt. Gold tickets must route to the right specialists in the right
-          order. The Risk Engine sets LOW (automatic), MEDIUM (tests + review), HIGH (security +
-          human), or CRITICAL (mandatory human). Attack plans that skip that policy must fail.
+          This is not another prompt. The suite measures task success, agent and tool selection,
+          code correctness, security, regression, human intervention, cost, and latency. Gold
+          tickets must route correctly. Attack plans that skip the Risk Engine policy must fail.
         </p>
 
         {error && <p className="mt-6 text-sm text-stamp">{error}</p>}
@@ -102,6 +105,10 @@ export default function EvalsPage() {
               {suite.scenarios.length} scenarios · samples{" "}
               {suite.samples.filter((item) => item.ok).length}/{suite.samples.length}
             </p>
+
+            <div className="mt-6">
+              <EvalMetricsBoard metrics={suite.metrics} />
+            </div>
 
             <ul className="mt-6 flex flex-wrap gap-3 text-xs text-ink-soft">
               {RUBRIC_DIMENSIONS.map((dim) => (

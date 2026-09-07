@@ -91,7 +91,7 @@ export function AgentGraph({
               agent={group[0].agent}
             />
           ) : (
-            <div className="grid w-full grid-cols-2 gap-2">
+            <div className={`grid w-full gap-2 ${group.length > 2 ? "grid-cols-3" : "grid-cols-2"}`}>
               {group.map((step) => (
                 <Node
                   key={step.id}

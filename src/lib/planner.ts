@@ -1,3 +1,4 @@
+import { hasPerformanceIssue } from "./risk";
 import type { ControlKind, PlannerResult, PlannerShape, TaskType } from "./types";
 
 function hay(text: string) {
@@ -26,6 +27,9 @@ function shapeOf(
   if (kinds.includes("schema_change") || kinds.includes("database_migration") || kinds.includes("destructive")) {
     return "schema";
   }
+  if (hasPerformanceIssue(ticket)) {
+    return "performance";
+  }
   if (
     any(ticket, [
       "button",
@@ -49,6 +53,7 @@ function changeLabel(ticket: string, shape: PlannerShape) {
   if (trimmed.length <= 72) return trimmed;
   if (shape === "ui-patch") return "Update UI copy or styling";
   if (shape === "schema") return "Change the data model";
+  if (shape === "performance") return "Improve latency or rendering cost";
   if (shape === "deploy") return "Production deployment";
   if (shape === "security") return "Security-sensitive change";
   return trimmed.slice(0, 69) + "…";
@@ -68,6 +73,7 @@ export function buildPlanner(input: {
   if (shape === "clarify") constraints.push("Do not invent a ship plan.");
   if (shape === "ui-patch") constraints.push("Keep the change proportional. No architecture parade.");
   if (shape === "schema") constraints.push("Additive fields are medium. Drops are high.");
+  if (shape === "performance") constraints.push("IF performance issue → Performance Agent before Developer.");
   if (shape === "feature") constraints.push("Requirements and architecture before code.");
   if (shape === "fix") constraints.push("Investigate before patching.");
   if (shape === "security" || shape === "incident") constraints.push("Security Review before Developer.");

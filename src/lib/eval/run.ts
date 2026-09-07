@@ -4,7 +4,8 @@ import { evaluatePlan, evaluateRun } from "../quality";
 import { executePlan } from "../orchestrate";
 import { SAMPLE_TICKETS, sampleToInput } from "../samples";
 import { attacksFor, planFromAgents } from "./attacks";
-import { EVAL_SCENARIOS, contextFor, type EvalScenario } from "./scenarios";
+import { aggregateMetrics, observeGold, type GoldObservation, type SuiteMetrics } from "./metrics";
+import { EVAL_SCENARIOS, type EvalScenario } from "./scenarios";
 import { scoreAssertions, type ScenarioScore } from "./rubric";
 
 const GOLD_MIN = 80;
@@ -38,14 +39,17 @@ export type Suite = {
     errors: string[];
   }[];
   scenarios: ScenarioResult[];
+  metrics: SuiteMetrics;
 };
 
-function goldCase(scenario: EvalScenario): CaseResult {
+function goldCase(scenario: EvalScenario): { result: CaseResult; observation: GoldObservation } {
+  const started = performance.now();
   const run = executePlan({
     task: scenario.ticket,
     repository: scenario.repository,
     branch: scenario.branch,
   });
+  const latencyMs = performance.now() - started;
   const ctx = {
     ticket: scenario.ticket,
     analysis: run.analysis,
@@ -56,11 +60,24 @@ function goldCase(scenario: EvalScenario): CaseResult {
   const score = scoreAssertions(scenario.id, scenario.assertions, ctx);
   const gate = evaluateRun(run);
   const failed = score.assertions.filter((item) => !item.pass);
-  return {
+  const ok = failed.length === 0 && score.score >= GOLD_MIN && gate.errorCount === 0;
+  const result: CaseResult = {
     kind: "gold",
-    ok: failed.length === 0 && score.score >= GOLD_MIN && gate.errorCount === 0,
+    ok,
     score,
     gate,
+  };
+  return {
+    result,
+    observation: observeGold({
+      scenario,
+      analysis: run.analysis,
+      plan: run.plan,
+      score,
+      gate,
+      ok,
+      latencyMs,
+    }),
   };
 }
 
@@ -90,7 +107,7 @@ function attackCases(scenario: EvalScenario): CaseResult[] {
   });
 }
 
-export function scoreScenario(scenario: EvalScenario): ScenarioResult {
+export function scoreScenario(scenario: EvalScenario): ScenarioResult & { observation: GoldObservation } {
   const gold = goldCase(scenario);
   const attacks = attackCases(scenario);
   return {
@@ -99,17 +116,19 @@ export function scoreScenario(scenario: EvalScenario): ScenarioResult {
     expected: scenario.expected,
     ticket: scenario.ticket,
     headline: scenario.headline,
-    gold,
+    gold: gold.result,
     attacks,
-    ok: gold.ok && attacks.every((item) => item.ok),
+    ok: gold.result.ok && attacks.every((item) => item.ok),
+    observation: gold.observation,
   };
 }
 
 export function runScenarioSuite() {
-  const results = EVAL_SCENARIOS.map(scoreScenario);
+  const scored = EVAL_SCENARIOS.map(scoreScenario);
   return {
-    passed: results.every((item) => item.ok),
-    results,
+    passed: scored.every((item) => item.ok),
+    results: scored.map(({ observation: _observation, ...result }) => result),
+    observations: scored.map((item) => item.observation),
   };
 }
 
@@ -129,11 +148,12 @@ export function runSampleSuite() {
 
 export function runEvalSuite(): Suite {
   const samples = runSampleSuite();
-  const scenarios = runScenarioSuite().results;
+  const { results: scenarios, observations } = runScenarioSuite();
   return {
     passed: samples.every((item) => item.ok) && scenarios.every((item) => item.ok),
     samples,
     scenarios,
+    metrics: aggregateMetrics(observations, samples),
   };
 }
 
@@ -155,10 +175,12 @@ export function scoreTicket(ticket: string) {
       score: null,
     };
   }
+  const scored = scoreScenario(scenario);
+  const { observation: _observation, ...result } = scored;
   return {
     analysis,
     plan,
     gate: evaluatePlan(analysis, plan, ticket),
-    score: scoreScenario(scenario),
+    score: result,
   };
 }

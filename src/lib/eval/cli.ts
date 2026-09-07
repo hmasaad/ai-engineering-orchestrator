@@ -1,10 +1,17 @@
 import { runEvalSuite } from "./run";
+import { metricsList } from "./metrics";
 
 const suite = runEvalSuite();
 
 for (const sample of suite.samples) {
   const mark = sample.ok ? "PASS" : "FAIL";
   console.log(`${mark}  sample:${sample.id}  score ${sample.score}${sample.errors.length ? `  ${sample.errors.join(",")}` : ""}`);
+}
+
+console.log("METRICS");
+for (const row of metricsList(suite.metrics)) {
+  const value = row.score == null ? row.display : `${row.display}`.padStart(3);
+  console.log(`  ${row.label.padEnd(28)} ${value}  ${row.detail}`);
 }
 
 for (const result of suite.scenarios) {

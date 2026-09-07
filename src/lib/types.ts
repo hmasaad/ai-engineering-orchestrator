@@ -45,6 +45,8 @@ export type AgentId =
   | "architect"
   | "tech_debt"
   | "security"
+  | "database"
+  | "performance"
   | "implement"
   | "tests"
   | "pr_review"
@@ -58,6 +60,8 @@ export type PublicAgentName =
   | "requirements"
   | "architect"
   | "security"
+  | "database"
+  | "performance"
   | "developer"
   | "testing"
   | "pr_reviewer"
@@ -77,12 +81,20 @@ export type RoutePattern =
   | "research"
   | "debt"
   | "architecture"
-  | "vague";
+  | "vague"
+  | "performance";
+
+/** A fired IF-rule from dynamic routing. */
+export type FiredRouteRule = {
+  if: "security-sensitive" | "database-change" | "performance-issue";
+  then: "security" | "database" | "performance";
+};
 
 /** Compact Agent Router output. */
 export type AgentRouting = {
   pattern: RoutePattern;
   agents: PublicAgentName[];
+  rules: FiredRouteRule[];
 };
 
 export type RouteSkip = {
@@ -129,7 +141,8 @@ export type PlannerShape =
   | "incident"
   | "security"
   | "deploy"
-  | "debt";
+  | "debt"
+  | "performance";
 
 export type PlannerResult = {
   intent: "clarify" | "research" | "change" | "respond";
@@ -268,6 +281,11 @@ export type QualityGate = {
     prompt_injection: GuardrailVerdict;
     rag_poisoning: GuardrailVerdict;
     agent_hijacking: GuardrailVerdict;
+    tool_abuse: GuardrailVerdict;
+    unauthorized_actions: GuardrailVerdict;
+    data_exfiltration: GuardrailVerdict;
+    malicious_repo: GuardrailVerdict;
+    malicious_mcp: GuardrailVerdict;
   };
 };
 
@@ -331,6 +349,35 @@ export type MergedResult = {
   recommendation: "quality_gate" | "hold" | "action";
 };
 
+export type SharedLearningHit = {
+  ticket: string;
+  pattern: string;
+  risk: Risk;
+  score: number;
+  summary: string;
+  lessons: string[];
+};
+
+export type SharedLearnings = {
+  mode: "offline";
+  hits: SharedLearningHit[];
+};
+
+export type Learning = {
+  id: string;
+  at: string;
+  ticket: string;
+  type: TaskType;
+  risk: Risk;
+  areas: AreaId[];
+  pattern: RoutePattern;
+  agents: PublicAgentName[];
+  summary: string;
+  lessons: string[];
+  quality: "PASS" | "FAIL";
+  source: "seed" | "live";
+};
+
 /**
  * Compact shared blackboard. Agents read and write these keys.
  * Empty objects/arrays mean that specialist has not written yet.
@@ -343,6 +390,9 @@ export type SharedAgentState = {
   security_findings: SharedFinding[];
   tests: string[];
   review: SharedReview | Record<string, never>;
+  database: { summary: string; notes: string[] } | Record<string, never>;
+  performance: { summary: string; notes: string[] } | Record<string, never>;
+  learnings: SharedLearnings | Record<string, never>;
   merged: MergedResult | Record<string, never>;
   status: RunStatus;
 };

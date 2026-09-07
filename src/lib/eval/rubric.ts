@@ -29,6 +29,7 @@ export type ScenarioAssertion = {
   test: (ctx: ScoreContext) => boolean;
   passDetail: string;
   failDetail: string;
+  expectedAgents?: import("../types").PublicAgentName[];
 };
 
 export type AssertionResult = {

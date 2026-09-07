@@ -1,9 +1,10 @@
-import { compactGate, evaluateRun } from "./quality";
+import { GUARDRAIL_CATALOG } from "./guardrails";
 import { compactMerge } from "./merge";
+import { compactGate, evaluateRun } from "./quality";
 import { AGENTS } from "./roster";
 import { hasArea } from "./classify";
 import { isFilled, initSharedState } from "./state";
-import type { AgentId, Artifact, OrchestrationRun, PlanStep, SharedAgentState } from "./types";
+import type { AgentId, Artifact, ArtifactSection, OrchestrationRun, PlanStep, SharedAgentState } from "./types";
 
 type Ctx = {
   ticket: string;
@@ -17,6 +18,23 @@ function stateOf(ctx: Ctx): SharedAgentState {
 
 function section(heading: string, bullets: string[]) {
   return { heading, bullets };
+}
+
+function fromPastRuns(ctx: Ctx): ArtifactSection | null {
+  const learnings = stateOf(ctx).learnings;
+  if (!learnings || !("hits" in learnings) || learnings.hits.length === 0) return null;
+  return section(
+    "From past runs",
+    learnings.hits.map((hit) => {
+      const lesson = hit.lessons[0] ? ` ${hit.lessons[0]}` : "";
+      return `${hit.pattern} · ${hit.risk}: ${hit.ticket}.${lesson}`;
+    }),
+  );
+}
+
+function withLearnings(sections: ArtifactSection[], ctx: Ctx) {
+  const past = fromPastRuns(ctx);
+  return past ? [past, ...sections] : sections;
 }
 
 function prior(ctx: Ctx, agent: AgentId) {
@@ -89,17 +107,20 @@ function researchArtifact(ctx: Ctx): Artifact {
       agent: "research",
       title: "Ticket is underspecified",
       summary: "There is not enough signal to pick a ship plan. These are the questions to answer first.",
-      sections: [
-        section(
-          "Ask the reporter",
-          ctx.run.analysis.missing.map((item) => `${item.question} (${item.whyItMatters})`),
-        ),
-        section("Do not do", [
-          "Do not generate a fix.",
-          "Do not open a PR.",
-          "Do not fan the ticket out to every specialist.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          section(
+            "Ask the reporter",
+            ctx.run.analysis.missing.map((item) => `${item.question} (${item.whyItMatters})`),
+          ),
+          section("Do not do", [
+            "Do not generate a fix.",
+            "Do not open a PR.",
+            "Do not fan the ticket out to every specialist.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [
         {
           severity: "blocker",
@@ -116,18 +137,21 @@ function researchArtifact(ctx: Ctx): Artifact {
       agent: "research",
       title: `How ${ctx.run.analysis.area} works`,
       summary: "This ticket is a question. Answer it. Do not quietly turn it into a patch.",
-      sections: [
-        section("Read first", [
-          `${ctx.run.analysis.area} session or domain module.`,
-          "Call path from UI action to persistence.",
-          "Tests that name the behavior in the ticket.",
-        ]),
-        section("Report shape", [
-          "What the current code does.",
-          "Where the behavior lives.",
-          "What would have to change if someone later asks for a fix.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          section("Read first", [
+            `${ctx.run.analysis.area} session or domain module.`,
+            "Call path from UI action to persistence.",
+            "Tests that name the behavior in the ticket.",
+          ]),
+          section("Report shape", [
+            "What the current code does.",
+            "Where the behavior lives.",
+            "What would have to change if someone later asks for a fix.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: "Stop after the report unless a human files a change ticket.",
     };
@@ -138,19 +162,22 @@ function researchArtifact(ctx: Ctx): Artifact {
       agent: "research",
       title: "Auth and upgrade paths",
       summary: "Evidence should come from session storage, refresh rotation, and the upgrade migration — not from a model guess.",
-      sections: [
-        section("Places to read", [
-          "Token / session store (secure storage vs cookies vs memory).",
-          "Refresh rotation and reuse detection.",
-          "App upgrade / migration hooks that rewrite stored credentials.",
-          "Resume / connectivity listeners that trigger silent re-auth.",
-        ]),
-        section("Evidence to collect", [
-          "A failing upgrade repro: vN logged in → install vN+1 → cold start.",
-          "Whether refresh tokens are rotated, revoked, or format-shifted.",
-          "Logs around 401 handling: does a 401 clear the session before retry?",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          section("Places to read", [
+            "Token / session store (secure storage vs cookies vs memory).",
+            "Refresh rotation and reuse detection.",
+            "App upgrade / migration hooks that rewrite stored credentials.",
+            "Resume / connectivity listeners that trigger silent re-auth.",
+          ]),
+          section("Evidence to collect", [
+            "A failing upgrade repro: vN logged in → install vN+1 → cold start.",
+            "Whether refresh tokens are rotated, revoked, or format-shifted.",
+            "Logs around 401 handling: does a 401 clear the session before retry?",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: "Hand the file list and repro to Root Cause Analysis.",
     };
@@ -160,13 +187,16 @@ function researchArtifact(ctx: Ctx): Artifact {
     agent: "research",
     title: `${ctx.run.analysis.area} evidence`,
     summary: `Gather the ${ctx.run.analysis.area} modules and contracts this ticket depends on.`,
-    sections: [
-      section("Search", [
-        `Modules named after ${ctx.run.analysis.area}.`,
-        "Recent diffs that touch the same area.",
-        "Tests that describe the expected behavior.",
-      ]),
-    ],
+    sections: withLearnings(
+      [
+        section("Search", [
+          `Modules named after ${ctx.run.analysis.area}.`,
+          "Recent diffs that touch the same area.",
+          "Tests that describe the expected behavior.",
+        ]),
+      ],
+      ctx,
+    ),
     findings: [],
     recommendation: "Pass evidence forward. Do not skip to the Developer Agent.",
   };
@@ -179,21 +209,24 @@ function requirementsArtifact(ctx: Ctx): Artifact {
       title: "Google social login requirements",
       summary:
         "Users can sign in with Google without replacing the existing session model. Architect and Security still run before Developer.",
-      sections: [
-        section("In scope", [
-          "Mobile client can start Google Sign-In and receive an app session.",
-          "Backend verifies the Google token and links `sub` to the existing user.",
-          "Existing email/password users can link Google later.",
-        ]),
-        section("Out of scope", [
-          "A second user directory keyed only on Google email.",
-          "Skipping Security Review because 'it is just OAuth'.",
-        ]),
-        section("Success", [
-          "A new user can sign in with Google and stay signed in across an app restart.",
-          "An existing user who links Google keeps the same account.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          section("In scope", [
+            "Mobile client can start Google Sign-In and receive an app session.",
+            "Backend verifies the Google token and links `sub` to the existing user.",
+            "Existing email/password users can link Google later.",
+          ]),
+          section("Out of scope", [
+            "A second user directory keyed only on Google email.",
+            "Skipping Security Review because 'it is just OAuth'.",
+          ]),
+          section("Success", [
+            "A new user can sign in with Google and stay signed in across an app restart.",
+            "An existing user who links Google keeps the same account.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: "Hand requirements to the Architect Agent. Do not code yet.",
     };
@@ -203,13 +236,16 @@ function requirementsArtifact(ctx: Ctx): Artifact {
     agent: "requirements",
     title: `${ctx.run.analysis.area} requirements`,
     summary: "Lock what the feature must do before Architect or Developer start.",
-    sections: [
-      section("In scope", [ctx.ticket.trim()]),
-      section("Constraints", [
-        `Stay inside ${ctx.run.analysis.area}.`,
-        "Do not expand into a rewrite.",
-      ]),
-    ],
+    sections: withLearnings(
+      [
+        section("In scope", [ctx.ticket.trim()]),
+        section("Constraints", [
+          `Stay inside ${ctx.run.analysis.area}.`,
+          "Do not expand into a rewrite.",
+        ]),
+      ],
+      ctx,
+    ),
     findings: [],
     recommendation: "Architect shapes the change against these requirements.",
   };
@@ -283,18 +319,21 @@ function architectArtifact(ctx: Ctx): Artifact {
       title: "Google identity as an auth provider, not a new user system",
       summary:
         "Social login sits beside existing sessions. Keep identity in the auth module; the backend exchanges the Google token; the mobile client only hosts the SDK.",
-      sections: [
-        ...(fromRequirements ? [fromRequirements] : []),
-        section("Boundaries", [
-          "Mobile: Google Sign-In SDK, no tokens in logs, no custom WebView login.",
-          "Backend: authorization-code or ID-token verify, then issue the app session.",
-          "Do not create a parallel user table keyed only on Google email.",
-        ]),
-        section("Data", [
-          "Link Google `sub` to the existing user record.",
-          "Keep refresh/session tokens in the store you already trust.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          ...(fromRequirements ? [fromRequirements] : []),
+          section("Boundaries", [
+            "Mobile: Google Sign-In SDK, no tokens in logs, no custom WebView login.",
+            "Backend: authorization-code or ID-token verify, then issue the app session.",
+            "Do not create a parallel user table keyed only on Google email.",
+          ]),
+          section("Data", [
+            "Link Google `sub` to the existing user record.",
+            "Keep refresh/session tokens in the store you already trust.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: "Security Review must cover account linking and token storage before the Developer Agent.",
     };
@@ -304,16 +343,19 @@ function architectArtifact(ctx: Ctx): Artifact {
     agent: "architect",
     title: `${ctx.run.analysis.area} change shape`,
     summary: "Design the smallest change that fits the existing system. Do not start with a rewrite.",
-    sections: [
-      ...(fromRequirements ? [fromRequirements] : []),
-      section("Boundaries", [
-        `Keep ${ctx.run.analysis.area} ownership in the module that already owns it.`,
-        "Do not introduce a new service for a local contract fix.",
-      ]),
-      section("Data", [
-        "Say what is stored, what is derived, and what must stay backward compatible.",
-      ]),
-    ],
+    sections: withLearnings(
+      [
+        ...(fromRequirements ? [fromRequirements] : []),
+        section("Boundaries", [
+          `Keep ${ctx.run.analysis.area} ownership in the module that already owns it.`,
+          "Do not introduce a new service for a local contract fix.",
+        ]),
+        section("Data", [
+          "Say what is stored, what is derived, and what must stay backward compatible.",
+        ]),
+      ],
+      ctx,
+    ),
     findings: [],
     recommendation: "Implementation follows this shape. Security still reviews auth and payment edges.",
   };
@@ -355,19 +397,22 @@ function securityArtifact(ctx: Ctx): Artifact {
       agent: "security",
       title: "Session migration without weakening reuse checks",
       summary: "The fix must migrate old refresh tokens once, not disable reuse detection or log tokens.",
-      sections: [
-        ...(fromArchitecture ? [fromArchitecture] : []),
-        section("Threats", [
-          "Stolen refresh token replay — reuse detection stays on.",
-          "Session fixation across upgrade — new family after a successful one-time migrate.",
-          "Token leakage in logs or crash reports during the migration window.",
-        ]),
-        section("Required controls", [
-          "One-time accept of the previous token format, then rotate.",
-          "Do not persist tokens in plaintext logs.",
-          "Do not skip logout-on-revoke for actual reuse.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          ...(fromArchitecture ? [fromArchitecture] : []),
+          section("Threats", [
+            "Stolen refresh token replay — reuse detection stays on.",
+            "Session fixation across upgrade — new family after a successful one-time migrate.",
+            "Token leakage in logs or crash reports during the migration window.",
+          ]),
+          section("Required controls", [
+            "One-time accept of the previous token format, then rotate.",
+            "Do not persist tokens in plaintext logs.",
+            "Do not skip logout-on-revoke for actual reuse.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [
         {
           severity: "blocker",
@@ -385,19 +430,22 @@ function securityArtifact(ctx: Ctx): Artifact {
       title: "OAuth account linking without session theft",
       summary:
         "Google Sign-In is high risk: a bad link step can attach an attacker’s Google account to a victim, or leak ID tokens on device.",
-      sections: [
-        ...(fromArchitecture ? [fromArchitecture] : []),
-        section("Threats", [
-          "Account linking without proving control of the existing session.",
-          "ID token accepted without verifying aud/iss/expiry.",
-          "Access tokens written to crash logs or shared preferences.",
-        ]),
-        section("Required controls", [
-          "Verify Google tokens on the backend, never trust the client.",
-          "Link only when the user is already authenticated, or create a new user from `sub`.",
-          "Keep reuse detection and secure storage for the app session you issue after Google.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          ...(fromArchitecture ? [fromArchitecture] : []),
+          section("Threats", [
+            "Account linking without proving control of the existing session.",
+            "ID token accepted without verifying aud/iss/expiry.",
+            "Access tokens written to crash logs or shared preferences.",
+          ]),
+          section("Required controls", [
+            "Verify Google tokens on the backend, never trust the client.",
+            "Link only when the user is already authenticated, or create a new user from `sub`.",
+            "Keep reuse detection and secure storage for the app session you issue after Google.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [
         {
           severity: "blocker",
@@ -413,16 +461,79 @@ function securityArtifact(ctx: Ctx): Artifact {
     agent: "security",
     title: `${ctx.run.analysis.area} threat review`,
     summary: "Review the change for abuse cases before a patch is written.",
-    sections: [
-      ...(fromArchitecture ? [fromArchitecture] : []),
-      section("Look at", [
-        "Authn/authz on the new path.",
-        "Injection, secrets, and sensitive logs.",
-        "Whether failure modes fail closed.",
-      ]),
-    ],
+    sections: withLearnings(
+      [
+        ...(fromArchitecture ? [fromArchitecture] : []),
+        section("Look at", [
+          "Authn/authz on the new path.",
+          "Injection, secrets, and sensitive logs.",
+          "Whether failure modes fail closed.",
+        ]),
+      ],
+      ctx,
+    ),
     findings: [],
     recommendation: "Block the Developer Agent if a control would be removed to make the bug disappear.",
+  };
+}
+
+function databaseArtifact(ctx: Ctx): Artifact {
+  const destructive = ctx.run.analysis.controlKinds.includes("destructive");
+  return {
+    agent: "database",
+    title: destructive ? "Destructive schema change" : `Additive schema in ${ctx.run.analysis.area}`,
+    summary: destructive
+      ? "Dropping a table is irreversible without a restore. Name the backup and the readers before Developer writes SQL."
+      : "Additive column. Keep it nullable or backfilled so existing rows still load.",
+    sections: withLearnings(
+      [
+        section("Schema", [
+          ctx.ticket.trim(),
+          destructive
+            ? "Require a restore path. Do not drop until nothing reads the table."
+            : "Type, nullability, default, and whether a backfill job is needed.",
+        ]),
+        section("Compatibility", [
+          destructive
+            ? "Find remaining queries, jobs, and models that still name the table."
+            : "Existing rows must deserialize after the column lands.",
+        ]),
+      ],
+      ctx,
+    ),
+    findings: destructive
+      ? [
+          {
+            severity: "blocker",
+            title: "No unreviewed DROP",
+            detail: "The Testing Agent must cover a restore / dual-read window.",
+          },
+        ]
+      : [],
+    recommendation: "Developer writes the migration against these constraints. Result Merger still runs.",
+  };
+}
+
+function performanceArtifact(ctx: Ctx): Artifact {
+  return {
+    agent: "performance",
+    title: `Slow path in ${ctx.run.analysis.area}`,
+    summary: "Find the cost before patching. A cache guessed in the Developer Agent is how you hide N+1.",
+    sections: withLearnings(
+      [
+        section("Bottleneck", [
+          ctx.ticket.trim(),
+          "Measure p95 on the reported list or query, then name the hot loop.",
+        ]),
+        section("Do not", [
+          "Do not add a cache as the first change.",
+          "Do not skip pagination or virtualization if the list is the cost.",
+        ]),
+      ],
+      ctx,
+    ),
+    findings: [],
+    recommendation: "Developer patches the measured hot path. Tests must lock the p95 case.",
   };
 }
 
@@ -430,10 +541,14 @@ function implementArtifact(ctx: Ctx): Artifact {
   const shared = stateOf(ctx);
   const findings = shared.security_findings;
   const architecture = shared.architecture;
+  const database = shared.database;
+  const performance = shared.performance;
   const fromState = [
     isFilled(architecture) && "summary" in architecture
       ? `Architecture: ${architecture.summary}`
       : null,
+    isFilled(database) && "summary" in database ? `Database: ${database.summary}` : null,
+    isFilled(performance) && "summary" in performance ? `Performance: ${performance.summary}` : null,
     ...findings.map((item) => `Security (${item.severity}): ${item.title}`),
   ].filter((item): item is string => Boolean(item));
 
@@ -444,18 +559,21 @@ function implementArtifact(ctx: Ctx): Artifact {
       title: "One-time refresh-token migration",
       summary:
         "Accept the previous refresh token once on first launch after upgrade, rotate to the new family, keep reuse detection on.",
-      sections: [
-        ...(fromState.length ? [section("From shared state", fromState)] : []),
-        section("Change", [
-          "Migration hook: if stored token is v1 and server returns reuse_detected on v2 parse, retry once with a migrate endpoint.",
-          "On success, store v2 and drop v1.",
-          "401 handler: retry refresh once before clearing the session.",
-        ]),
-        section("Not in this patch", [
-          "Do not turn off family revoke.",
-          "Do not force every user to re-login 'to be safe'.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          ...(fromState.length ? [section("From shared state", fromState)] : []),
+          section("Change", [
+            "Migration hook: if stored token is v1 and server returns reuse_detected on v2 parse, retry once with a migrate endpoint.",
+            "On success, store v2 and drop v1.",
+            "401 handler: retry refresh once before clearing the session.",
+          ]),
+          section("Not in this patch", [
+            "Do not turn off family revoke.",
+            "Do not force every user to re-login 'to be safe'.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: rca?.recommendation ?? "Generate tests for upgrade and for actual reuse.",
     };
@@ -467,14 +585,17 @@ function implementArtifact(ctx: Ctx): Artifact {
       title: "Google Sign-In beside the existing session",
       summary:
         "Add Google as a provider in the auth module. Backend verifies the token. Mobile only hosts the SDK.",
-      sections: [
-        ...(fromState.length ? [section("From shared state", fromState)] : []),
-        section("Change", [
-          "Mobile: Google Sign-In SDK, then exchange the token with the backend.",
-          "Backend: verify aud/iss/expiry, link `sub`, issue the app session.",
-          "Do not trust the client as the source of truth.",
-        ]),
-      ],
+      sections: withLearnings(
+        [
+          ...(fromState.length ? [section("From shared state", fromState)] : []),
+          section("Change", [
+            "Mobile: Google Sign-In SDK, then exchange the token with the backend.",
+            "Backend: verify aud/iss/expiry, link `sub`, issue the app session.",
+            "Do not trust the client as the source of truth.",
+          ]),
+        ],
+        ctx,
+      ),
       findings: [],
       recommendation: "Tests must cover account linking and a forged ID token.",
     };
@@ -484,13 +605,16 @@ function implementArtifact(ctx: Ctx): Artifact {
     agent: "implement",
     title: `Scoped ${ctx.run.analysis.area} change`,
     summary: "A patch against the locked cause, not a rewrite.",
-    sections: [
-      ...(fromState.length ? [section("From shared state", fromState)] : []),
-      section("Change", [
-        ctx.ticket.trim(),
-        "Keep the diff inside the owning module.",
-      ]),
-    ],
+    sections: withLearnings(
+      [
+        ...(fromState.length ? [section("From shared state", fromState)] : []),
+        section("Change", [
+          ctx.ticket.trim(),
+          "Keep the diff inside the owning module.",
+        ]),
+      ],
+      ctx,
+    ),
     findings: [],
     recommendation: "Tests must reproduce the original failure.",
   };
@@ -566,11 +690,10 @@ function evalsArtifact(ctx: Ctx): Artifact {
           ([id, row]) => `${row.pass ? "pass" : "fail"}: ${id.replaceAll("_", " ")} · ${row.score}`,
         ),
       ),
-      section("Guardrails", [
-        `${gate.guardrails.prompt_injection}: prompt injection`,
-        `${gate.guardrails.rag_poisoning}: RAG poisoning`,
-        `${gate.guardrails.agent_hijacking}: agent hijacking`,
-      ]),
+      section(
+        "Guardrails",
+        GUARDRAIL_CATALOG.map((item) => `${gate.guardrails[item.id]}: ${item.label.toLowerCase()}`),
+      ),
       section(
         "Checks",
         quality.checks.map((item) => `${item.pass ? "pass" : item.severity}: ${item.label} — ${item.detail}`),
@@ -714,6 +837,8 @@ const BUILDERS: Record<AgentId, (ctx: Ctx) => Artifact> = {
   architect: architectArtifact,
   tech_debt: debtArtifact,
   security: securityArtifact,
+  database: databaseArtifact,
+  performance: performanceArtifact,
   implement: implementArtifact,
   tests: testsArtifact,
   pr_review: reviewArtifact,

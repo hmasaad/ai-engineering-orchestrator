@@ -1,4 +1,6 @@
 import { asTaskInput } from "@/lib/classify";
+import { learningFromRun } from "@/lib/rag";
+import { loadLiveLearnings, saveLearning } from "@/lib/learnings-store";
 import { executePlanAsync } from "@/lib/orchestrate";
 import { saveLatest } from "@/lib/store";
 import type { OrchestrationRun, TaskInput } from "@/lib/types";
@@ -38,6 +40,7 @@ export async function POST(request: Request) {
 
       try {
         let last: OrchestrationRun | null = null;
+        const live = await loadLiveLearnings().catch(() => []);
         const run = await executePlanAsync(
           input,
           (event) => {
@@ -52,9 +55,15 @@ export async function POST(request: Request) {
             if (event.type === "error") send("error", { message: event.message });
           },
           180,
+          live,
         );
         last = last ?? run;
         await saveLatest(last);
+        try {
+          await saveLearning(learningFromRun(last));
+        } catch {
+          // Offline still succeeded. Disk learnings are best-effort.
+        }
         send("done", { ok: true, id: last.id });
       } catch (error) {
         send("error", { message: error instanceof Error ? error.message : "Run failed." });

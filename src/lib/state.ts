@@ -1,6 +1,7 @@
-import { isSimpleUi } from "./router";
+import { asTaskInput, hasArea, understandTask } from "./classify";
 import { compactMerge } from "./merge";
-import { hasArea } from "./classify";
+import { packLearnings, retrieveLearnings } from "./rag";
+import { isSimpleUi } from "./router";
 import type {
   AgentId,
   Artifact,
@@ -29,6 +30,9 @@ export function initSharedState(task: string, status: RunStatus = "planned"): Sh
     security_findings: [],
     tests: [],
     review: {},
+    database: {},
+    performance: {},
+    learnings: {},
     merged: {},
     status,
   };
@@ -43,6 +47,9 @@ export function compactState(state: SharedAgentState): SharedAgentState {
     security_findings: [...state.security_findings],
     tests: [...state.tests],
     review: state.review,
+    database: state.database,
+    performance: state.performance ?? {},
+    learnings: state.learnings ?? {},
     merged: state.merged,
     status: state.status,
   };
@@ -64,6 +71,9 @@ function filesFor(analysis: TaskAnalysis, task: string): string[] {
   }
   if (hasArea(analysis, "authentication") && analysis.taskType === "bug") {
     return ["src/auth/refresh.ts", "src/auth/session.ts", "src/auth/upgrade-migration.ts"];
+  }
+  if (analysis.planner?.shape === "performance") {
+    return ["src/screens/SettingsList.tsx", "src/screens/virtualize.ts"];
   }
   if (isSimpleUi(analysis) || hasArea(analysis, "ui")) {
     return ["src/screens/Settings.tsx", "src/screens/Settings.css"];
@@ -152,6 +162,26 @@ export function writeSharedState(
     case "security":
       next.security_findings = asFindings(artifact);
       break;
+    case "database":
+      next.database = {
+        summary: artifact.summary,
+        notes: [
+          ...bullets(artifact, "Schema"),
+          ...bullets(artifact, "Compatibility"),
+          ...bullets(artifact, "Look at"),
+        ],
+      };
+      break;
+    case "performance":
+      next.performance = {
+        summary: artifact.summary,
+        notes: [
+          ...bullets(artifact, "Bottleneck"),
+          ...bullets(artifact, "Do not"),
+          ...bullets(artifact, "Look at"),
+        ],
+      };
+      break;
     case "implement":
       next.files_changed = filesFor(analysis, state.task);
       break;
@@ -176,6 +206,8 @@ export function setStateStatus(state: SharedAgentState, status: RunStatus): Shar
 }
 
 export function draftState(input: TaskInput | string): SharedAgentState {
-  const task = typeof input === "string" ? input : input.task;
-  return initSharedState(task);
+  const parsed = asTaskInput(input);
+  const state = initSharedState(parsed.task);
+  state.learnings = packLearnings(retrieveLearnings(parsed.task, understandTask(parsed)));
+  return state;
 }

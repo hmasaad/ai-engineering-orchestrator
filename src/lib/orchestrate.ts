@@ -2,8 +2,9 @@ import { asTaskInput, understandTask } from "./classify";
 import { buildPlan } from "./plan";
 import { evaluateRun } from "./quality";
 import { runSpecialist } from "./specialists";
+import { packLearnings, retrieveLearnings } from "./rag";
 import { initSharedState, setStateStatus, writeSharedState } from "./state";
-import type { AgentStepEvent, GateId, OrchestrationRun, TaskInput } from "./types";
+import type { AgentStepEvent, GateId, Learning, OrchestrationRun, TaskInput } from "./types";
 
 export type OrchestratorEvent =
   | { type: "analysis"; run: OrchestrationRun }
@@ -17,11 +18,13 @@ function newId() {
   return `run-${Date.now().toString(36)}`;
 }
 
-export function planTicket(input: TaskInput | string): OrchestrationRun {
+export function planTicket(input: TaskInput | string, extraLearnings: Learning[] = []): OrchestrationRun {
   const parsed = asTaskInput(input);
   const analysis = understandTask(parsed);
   const plan = buildPlan(analysis);
   const ticket = parsed.task.trim();
+  const state = initSharedState(ticket, "planned");
+  state.learnings = packLearnings(retrieveLearnings(ticket, analysis, extraLearnings));
   return {
     id: newId(),
     createdAt: new Date().toISOString(),
@@ -30,7 +33,7 @@ export function planTicket(input: TaskInput | string): OrchestrationRun {
     analysis,
     plan,
     artifacts: [],
-    state: initSharedState(ticket, "planned"),
+    state,
     currentStepId: null,
     quality: evaluateRun({ ticket, analysis, plan, artifacts: [] }),
     status: "planned",
@@ -118,19 +121,24 @@ function processSteps(
   return completeRun(run);
 }
 
-function startRun(input: OrchestrationRun | TaskInput | string): OrchestrationRun {
+function startRun(
+  input: OrchestrationRun | TaskInput | string,
+  extraLearnings: Learning[] = [],
+): OrchestrationRun {
   if (typeof input === "object" && "plan" in input) {
+    const state = initSharedState(input.ticket, "running");
+    state.learnings = packLearnings(retrieveLearnings(input.ticket, input.analysis, extraLearnings));
     return {
       ...input,
       artifacts: [],
-      state: initSharedState(input.ticket, "running"),
+      state,
       approvals: [],
       approval: undefined,
       pendingGate: null,
       resumeFrom: 0,
     };
   }
-  return planTicket(input);
+  return planTicket(input, extraLearnings);
 }
 
 export function executePlan(
@@ -150,8 +158,9 @@ export async function executePlanAsync(
   input: OrchestrationRun | TaskInput | string,
   onEvent?: (event: OrchestratorEvent) => void,
   delayMs = 220,
+  extraLearnings: Learning[] = [],
 ): Promise<OrchestrationRun> {
-  const run = startRun(input);
+  const run = startRun(input, extraLearnings);
   run.status = "running";
   run.state = setStateStatus(run.state, "running");
   onEvent?.({ type: "analysis", run: snapshot(run) });

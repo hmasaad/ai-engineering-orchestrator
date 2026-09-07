@@ -42,6 +42,38 @@ const SCHEMA_ADD_HINTS = [
   "new database field",
 ];
 
+export const PERFORMANCE_HINTS = [
+  "slow",
+  "latency",
+  "p95",
+  "p99",
+  "timeout",
+  "too many queries",
+  "n+1",
+  "n + 1",
+  "memory leak",
+  "cpu bound",
+  "performance",
+  "under load",
+  "takes 8 seconds",
+  "takes four seconds",
+  "four seconds",
+  "10,000 rows",
+];
+
+export const EXFIL_HINTS = [
+  "email the production",
+  "exfiltrate",
+  "paste the secrets",
+  "paste production secrets",
+  "upload the database dump",
+  "send customer email",
+  "attacker@",
+  "cat ~/.ssh",
+  "webhook.site",
+  "production .env",
+];
+
 function hay(text: string) {
   return ` ${text.toLowerCase().replace(/\s+/g, " ").trim()} `;
 }
@@ -49,6 +81,14 @@ function hay(text: string) {
 function any(text: string, needles: string[]) {
   const h = hay(text);
   return needles.some((needle) => h.includes(needle.toLowerCase()));
+}
+
+export function hasPerformanceIssue(ticket: string) {
+  return any(ticket, PERFORMANCE_HINTS);
+}
+
+export function hasDataExfiltration(ticket: string) {
+  return any(ticket, EXFIL_HINTS);
 }
 
 export const RISK_LADDER: {
@@ -180,9 +220,15 @@ export function scoreRisk(input: {
   } else if (additive) {
     level = "medium";
     push(factors, "schema", "Additive schema change (new field/column).");
-  } else if (uiOnly && input.taskType !== "bug") {
+  } else if (hasDataExfiltration(ticket)) {
+    level = "high";
+    push(factors, "exfil", "Ticket asked to send secrets or customer data out.");
+  } else if (uiOnly && input.taskType !== "bug" && !hasPerformanceIssue(ticket)) {
     level = "low";
     push(factors, "ui", "UI / copy / CSS only.");
+  } else if (hasPerformanceIssue(ticket)) {
+    level = "medium";
+    push(factors, "performance", "Performance issue — not a LOW UI patch.");
   } else if (input.taskType === "bug") {
     level = "medium";
     push(factors, "bug", "Bug fix — tests and review, not a one-shot patch.");

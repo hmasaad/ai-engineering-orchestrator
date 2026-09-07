@@ -30,6 +30,12 @@ const WHY: Record<AgentId, (analysis: TaskAnalysis, gate?: GateId) => string> = 
     hasArea(a, "authentication")
       ? "Auth changes can lock people out or let the wrong people in. Review before a patch."
       : "Threat-model the change before generating a fix.",
+  database: (a) =>
+    a.controlKinds.includes("destructive")
+      ? "Destructive schema. Name the rollback and what rows disappear before Developer writes SQL."
+      : "Review the additive field: type, nullability, backfill, and indexes before Developer.",
+  performance: () =>
+    "Measure the slow path (render, query, p95) before anyone patches. Do not guess a cache.",
   implement: (a) =>
     isSimpleUi(a)
       ? "LOW risk UI patch. Write the scoped change; the quality gate still runs."
@@ -101,6 +107,10 @@ function specialistStep(
 
 function nextWave(prev: PlanStep | undefined, agent: AgentId): number {
   const base = prev?.wave ?? 0;
+  const dynamic = new Set<AgentId>(["security", "database", "performance"]);
+  if (prev && dynamic.has(prev.agent) && dynamic.has(agent)) {
+    return prev.wave;
+  }
   if (
     prev &&
     (agent === "tests" || agent === "pr_review") &&

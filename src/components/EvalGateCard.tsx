@@ -1,11 +1,6 @@
 import { EVAL_DIMENSIONS } from "@/lib/quality";
+import { GUARDRAIL_CATALOG } from "@/lib/guardrails";
 import type { QualityGate } from "@/lib/types";
-
-const GUARDRAILS: { id: keyof QualityGate["guardrails"]; label: string }[] = [
-  { id: "prompt_injection", label: "Prompt injection" },
-  { id: "rag_poisoning", label: "RAG poisoning" },
-  { id: "agent_hijacking", label: "Agent hijacking" },
-];
 
 function tone(pass: boolean) {
   return pass ? "border-navy bg-navy text-paper" : "border-stamp bg-stamp/15 text-stamp";
@@ -23,7 +18,7 @@ export function EvalGateCard({
   return (
     <section className="rounded-2xl border border-rule bg-white/70 p-5">
       <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-blueprint">
-        7. Evaluation / quality gate
+        8. Evaluation / quality gate
       </p>
       <p className="mt-2 font-serif text-2xl text-navy">{passed ? "PASS" : "FAIL"}</p>
       <p className="mt-2 text-sm text-ink-soft">
@@ -48,7 +43,7 @@ export function EvalGateCard({
 
       <p className="mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-ink-soft">Guardrails</p>
       <div className="mt-2 flex flex-wrap gap-1.5">
-        {GUARDRAILS.map((item) => {
+        {GUARDRAIL_CATALOG.map((item) => {
           const ok = gate.guardrails[item.id] === "pass";
           return (
             <span

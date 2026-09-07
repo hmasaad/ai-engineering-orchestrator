@@ -477,6 +477,8 @@ export function understandTask(input: TaskInput | string): TaskAnalysis {
     asksForChange: change,
     planner,
     riskEngine,
+    ticket: text,
+    controlKinds,
   });
   const corpus = corpusOf(parsed);
   const signals = [

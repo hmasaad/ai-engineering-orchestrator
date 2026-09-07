@@ -8,6 +8,8 @@ import { AgentRouterCard } from "@/components/AgentRouterCard";
 import { AppHeader } from "@/components/AppHeader";
 import { ControlCard } from "@/components/ControlCard";
 import { EvalGateCard } from "@/components/EvalGateCard";
+import { GuardrailsCard } from "@/components/GuardrailsCard";
+import { LearningsCard } from "@/components/LearningsCard";
 import { PlanView } from "@/components/PlanView";
 import { PlannerCard } from "@/components/PlannerCard";
 import { ResultMergerCard } from "@/components/ResultMergerCard";
@@ -225,7 +227,9 @@ export default function HomePage() {
             {analysis.riskEngine ? <RiskEngineCard engine={analysis.riskEngine} /> : null}
             {analysis.route ? <AgentRouterCard route={analysis.route} /> : null}
             <SharedStateCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <LearningsCard ticket={ticket} analysis={analysis} />
             <ResultMergerCard state={liveState ?? emptyState} live={Boolean(liveState)} />
+            <GuardrailsCard ticket={ticket} analysis={analysis} plan={plan} />
             <EvalGateCard gate={draftGate} />
             <ControlCard control={plan.control} />
             <PlanView plan={plan} />
